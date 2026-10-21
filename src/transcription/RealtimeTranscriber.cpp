@@ -12,8 +12,6 @@ void RealtimeTranscriber::connectSession(QString s, QString ch, const ProviderCo
     closing = false;
     retries = 0;
     assembler = TranscriptAssembler();
-    ranges.clear();
-    turns.clear();
     connectSocket();
 }
 bool RealtimeTranscriber::send(const QJsonObject &o) {
@@ -61,8 +59,10 @@ void RealtimeTranscriber::connectSocket() {
             return;
         ready = false;
         emit status(channel, e);
+        for (auto range : tracker.retireConnection())
+            emit gap(channel, range.first, range.second);
         if (sentBytes > 0)
-            emit gap(channel, turnStart, endMs);
+            emit gap(channel, turnStart, turnStart + sentBytes / 48);
         sentBytes = 0;
         voice = false;
         if (!closing && retries < 5) {
@@ -133,7 +133,7 @@ void RealtimeTranscriber::commit() {
     if (sentBytes < 4800)
         return;
     if (send({{"type", "input_audio_buffer.commit"}})) {
-        turns.enqueue({turnStart, turnStart + sentBytes / 48});
+        tracker.queuedCommit(turnStart, turnStart + sentBytes / 48);
         sentBytes = 0;
         voice = false;
     }
@@ -151,25 +151,21 @@ void RealtimeTranscriber::event(const QByteArray &bytes) {
         flush();
     }
     auto itemId = e["item_id"].toString();
-    if (type == "input_audio_buffer.committed" && !turns.isEmpty()) {
-        ranges[itemId] = turns.dequeue();
-        if (!completedItems.contains(itemId))
-            unfinishedItems.insert(itemId);
-    }
+    if (type == "input_audio_buffer.committed")
+        tracker.acknowledge(itemId);
     if (type == "conversation.item.input_audio_transcription.completed" ||
         type == "conversation.item.input_audio_transcription.failed") {
-        unfinishedItems.remove(itemId);
-        completedItems.insert(itemId);
+        tracker.completed(itemId);
     }
     if (type == "error") {
         emit status(channel, QStringLiteral("转写服务错误：") + e["error"].toObject()["code"].toString());
     }
     if (type == "conversation.item.input_audio_transcription.failed") {
-        auto range = ranges.value(e["item_id"].toString(), {turnStart, endMs});
+        auto range = tracker.rangeFor(itemId, {turnStart, endMs});
         emit gap(channel, range.first, range.second);
         emit status(channel, QStringLiteral("一段音频转写失败"));
     }
-    auto range = ranges.value(e["item_id"].toString(), QPair<qint64, qint64>{turnStart, endMs});
+    auto range = tracker.rangeFor(itemId, {turnStart, endMs});
     auto row = assembler.apply(e, sid, channel, range.first, range.second);
     if (!row.isEmpty())
         emit segmentChanged(row);
@@ -194,10 +190,7 @@ void RealtimeTranscriber::stop() {
     closing = true;
     ready = false;
     pending.clear();
-    turns.clear();
-    ranges.clear();
-    unfinishedItems.clear();
-    completedItems.clear();
+    tracker.retireConnection();
     sentBytes = 0;
     voice = false;
     if (transport) {

@@ -15,6 +15,7 @@ class AudioController : public QObject {
     explicit AudioController(QObject *p = nullptr);
     std::function<AudioSource *(const QString &)> renderFactory;
     std::function<AudioSource *(const QByteArray &)> microphoneFactory;
+    std::function<std::unique_ptr<WavWriter>()> writerFactory;
     ~AudioController() {
         stop();
     }

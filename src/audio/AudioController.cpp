@@ -5,6 +5,7 @@
 #include <QtEndian>
 #include <cmath>
 AudioController::AudioController(QObject *parent) : QObject(parent) {
+    writerFactory = []() { return std::make_unique<WavWriter>(); };
     renderFactory = [](const QString &id) -> AudioSource * { return new WasapiLoopbackSource(id); };
     microphoneFactory = [](const QByteArray &id) -> AudioSource * {
         auto selected = QMediaDevices::defaultAudioInput();
@@ -88,7 +89,7 @@ void AudioController::format(QString channel, QAudioFormat f) {
         return;
     auto t = channel == "remote" ? remote : microphone;
     t->converter = std::make_unique<PcmConverter>(f);
-    t->writer = std::make_unique<WavWriter>();
+    t->writer = writerFactory();
     auto id = newId();
     auto relative = "sessions/" + sid + "/" + channel + "-" + id + ".wav";
     QDir().mkpath(root + "/sessions/" + sid);
@@ -116,7 +117,12 @@ void AudioController::receive(QString channel, const QByteArray &b) {
         return;
     if (t->writer->size() + pcm.size() > 1024ll * 1024 * 1024) {
         t->record["endMs"] = t->record["startMs"].toInteger() + t->writer->size() / 48;
-        t->writer->close();
+        if (!t->writer->close()) {
+            t->record["writeError"] = true;
+            emit channelError(channel, QStringLiteral("录音分段保存失败，文件可能不完整"));
+            stop();
+            return;
+        }
         emit segmentSaved(t->record);
         auto id = newId();
         auto rel = "sessions/" + sid + "/" + channel + "-" + id + ".wav";
@@ -131,6 +137,7 @@ void AudioController::receive(QString channel, const QByteArray &b) {
     }
     qint64 start = t->record["startMs"].toInteger() + t->writer->size() / 48;
     if (!t->writer->append(pcm)) {
+        t->record["writeError"] = true;
         emit channelError(channel, QStringLiteral("录音写入失败，已停止采集"));
         stop();
         return;
@@ -165,7 +172,11 @@ void AudioController::stop() {
     for (auto t : {remote, microphone})
         if (t && t->writer) {
             t->record["endMs"] = t->record["startMs"].toInteger() + t->writer->size() / 48;
-            t->writer->close();
+            if (!t->writer->close()) {
+                t->record["writeError"] = true;
+                emit channelError(t->record["channel"].toString(),
+                                  QStringLiteral("录音文件保存失败，文件可能不完整"));
+            }
             emit segmentSaved(t->record);
             t->writer.reset();
         }

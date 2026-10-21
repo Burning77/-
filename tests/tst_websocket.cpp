@@ -8,11 +8,28 @@ class WebSocketTest : public QObject {
   private slots:
     void upgradesAndReceivesNativeWebSocket() {
         QTcpServer server;
+        QPointer<QTcpSocket> peer;
         QVERIFY(server.listen(QHostAddress::LocalHost));
         connect(&server, &QTcpServer::newConnection, this, [&] {
             auto socket = server.nextPendingConnection();
+            peer = socket;
             connect(socket, &QTcpSocket::readyRead, socket, [socket] {
-                auto input = socket->property("input").toByteArray() + socket->readAll();
+                auto incoming = socket->readAll();
+                if (socket->property("upgraded").toBool()) {
+                    auto frames = socket->property("frames").toByteArray() + incoming;
+                    socket->setProperty("frames", frames);
+                    if (frames.size() < 6)
+                        return;
+                    int length = static_cast<unsigned char>(frames[1]) & 127;
+                    if (length >= 126 || frames.size() < 6 + length)
+                        return;
+                    QByteArray payload(length, 0);
+                    for (int i = 0; i < length; i++)
+                        payload[i] = frames[6 + i] ^ frames[2 + i % 4];
+                    socket->setProperty("clientText", payload);
+                    return;
+                }
+                auto input = socket->property("input").toByteArray() + incoming;
                 socket->setProperty("input", input);
                 if (socket->property("upgraded").toBool() || !input.contains("\r\n\r\n"))
                     return;
@@ -39,6 +56,9 @@ class WebSocketTest : public QObject {
         QTRY_COMPARE_WITH_TIMEOUT(message.size(), 1, 5000);
         QCOMPARE(message[0][0].toByteArray(), QByteArray("hello"));
         QCOMPARE(errors.size(), 0);
+        QVERIFY(transport.send("from-client"));
+        QTRY_COMPARE_WITH_TIMEOUT(peer->property("clientText").toByteArray(), QByteArray("from-client"),
+                                  3000);
         transport.stop();
         QVERIFY(transport.wait(2000));
     }

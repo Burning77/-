@@ -1,8 +1,114 @@
 #include "app/SessionController.h"
+#include "app/AppSettings.h"
+#include <QTcpServer>
+#include <QTcpSocket>
 #include <QtTest>
+class IdleSource : public AudioSource {
+    void run() override {
+        QAudioFormat f;
+        f.setSampleRate(24000);
+        f.setChannelCount(1);
+        f.setSampleFormat(QAudioFormat::Int16);
+        emit formatReady(f);
+        exec();
+    }
+};
 class SessionTest : public QObject {
     Q_OBJECT
+    QTemporaryDir settings;
   private slots:
+    void initTestCase() {
+        QCoreApplication::setOrganizationName("InterviewAssistantTests");
+        QCoreApplication::setApplicationName("SessionRegression");
+        QSettings::setDefaultFormat(QSettings::IniFormat);
+        QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, settings.path());
+    }
+    void extractsFinalPendingSpeechAfterRecordingEnds() {
+        QTcpServer server;
+        QVERIFY(server.listen(QHostAddress::LocalHost));
+        QList<QTcpSocket *> requests;
+        auto respond = [](QTcpSocket *socket) {
+            socket->write(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\ndata: "
+                "{\"choices\":[{\"delta\":{\"content\":\"{\\\"questions\\\":[]}\"},\"finish_reason\":"
+                "\"stop\"}]}\n\ndata: [DONE]\n\n");
+            socket->disconnectFromHost();
+        };
+        connect(&server, &QTcpServer::newConnection, this, [&] {
+            auto socket = server.nextPendingConnection();
+            connect(socket, &QTcpSocket::readyRead, socket, [&, socket] {
+                socket->readAll();
+                if (requests.contains(socket))
+                    return;
+                requests.append(socket);
+                if (requests.size() > 1)
+                    respond(socket);
+            });
+        });
+        ProviderConfig config;
+        config.provider = "DeepSeek";
+        config.model = "fixture";
+        config.baseUrl = QString("http://127.0.0.1:%1").arg(server.serverPort());
+        AppSettings().save(config);
+        AppSettings().select("DeepSeek");
+        config.baseUrl = "invalid://disabled";
+        AppSettings().saveTranscription(config);
+        QTemporaryDir data;
+        SessionController c(data.path());
+        c.client.keyReader = [](const QString &) { return QString("test-only"); };
+        c.audio.renderFactory = [](const QString &) -> AudioSource * { return new IdleSource; };
+        c.audio.microphoneFactory = [](const QByteArray &) -> AudioSource * { return new IdleSource; };
+        auto sid = c.createSession("final speech", "", "");
+        c.startRecording(sid, "fixture", {});
+        auto transcriber = c.findChildren<RealtimeTranscriber *>().first();
+        QJsonObject row{{"id", "first"}, {"sessionId", sid}, {"channel", "remote"},
+                        {"final", true}, {"revision", 1},    {"text", "first question"}};
+        transcriber->segmentChanged(row);
+        c.extractNow(sid);
+        QTRY_COMPARE_WITH_TIMEOUT(requests.size(), 1, 3000);
+        row["id"] = "last";
+        row["text"] = "last question";
+        transcriber->segmentChanged(row);
+        c.finish();
+        QTRY_VERIFY_WITH_TIMEOUT(!c.recording(), 6500);
+        respond(requests.first());
+        QTRY_COMPARE_WITH_TIMEOUT(requests.size(), 2, 3000);
+    }
+    void rejectsMixedValidAndInventedReviewCitations() {
+        QTemporaryDir d(QDir::currentPath() + "/review-XXXXXX");
+        SessionController c(d.path());
+        c.client.keyReader = [](const QString &) { return QString(); };
+        auto sid = c.createSession("review", "", "");
+        QVERIFY(c.store.put("transcripts", {{"id", "t"},
+                                            {"sessionId", sid},
+                                            {"channel", "microphone"},
+                                            {"final", true},
+                                            {"revision", 7},
+                                            {"text", "actual answer"}}));
+        auto request = c.review(sid);
+        QVERIFY(!request.isEmpty());
+        c.client.textDelta(request, "[t] correct reference; [invented-id] fabricated reference");
+        c.client.finished(request);
+        auto rows = c.store.list("reviews", sid);
+        QCOMPARE(rows.size(), 1);
+        QCOMPARE(rows[0]["state"].toString(), QString("Failed"));
+    }
+    void preservesReviewSourceVersions() {
+        QTemporaryDir d(QDir::currentPath() + "/review-version-XXXXXX");
+        SessionController c(d.path());
+        c.client.keyReader = [](const QString &) { return QString(); };
+        auto sid = c.createSession("review", "", "");
+        QVERIFY(c.store.put("transcripts", {{"id", "t"},
+                                            {"sessionId", sid},
+                                            {"channel", "microphone"},
+                                            {"final", true},
+                                            {"revision", 7},
+                                            {"text", "actual answer"}}));
+        c.review(sid);
+        auto rows = c.store.list("reviews", sid);
+        QCOMPARE(rows.size(), 1);
+        QCOMPARE(rows[0]["sourceRevisions"].toObject()["t"].toInt(), 7);
+    }
     void preservesGenerationOriginAcrossSessionChanges() {
         QTemporaryDir d(QDir::currentPath() + "/session-XXXXXX");
         SessionController c(d.path());

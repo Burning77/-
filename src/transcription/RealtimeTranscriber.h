@@ -1,5 +1,6 @@
 #pragma once
 #include "TranscriptAssembler.h"
+#include "TurnTracker.h"
 #include "WebSocketTransport.h"
 #include "domain/Types.h"
 #include <QHash>
@@ -18,7 +19,7 @@ class RealtimeTranscriber : public QObject {
     void finish(bool closeInput = true);
     void stop();
     bool hasUnfinishedAudio() const {
-        return !pending.isEmpty() || sentBytes > 0 || !turns.isEmpty() || !unfinishedItems.isEmpty();
+        return !pending.isEmpty() || sentBytes > 0 || tracker.pending();
     }
   signals:
     void segmentChanged(QJsonObject segment);
@@ -39,7 +40,5 @@ class RealtimeTranscriber : public QObject {
     qint64 pendingStart = 0, turnStart = 0, endMs = 0, lastVoice = 0, sentBytes = 0;
     bool ready = false, closing = true, voice = false;
     int retries = 0;
-    QQueue<QPair<qint64, qint64>> turns;
-    QHash<QString, QPair<qint64, qint64>> ranges;
-    QSet<QString> unfinishedItems, completedItems;
+    TurnTracker tracker;
 };

@@ -249,8 +249,6 @@ MainWindow::MainWindow(QWidget *parent, QString dataRoot)
         refresh();
     });
     connect(&controller, &SessionController::changed, this, [this](QString sid) {
-        if (viewedSession.isEmpty())
-            viewedSession = sid;
         refreshHistory();
         if (viewedSession == sid)
             refresh();
@@ -537,14 +535,15 @@ void MainWindow::editTranscript() {
     if (!item)
         return;
     auto id = item->data(Qt::UserRole).toString();
-    for (auto t : controller.store.list("transcripts", viewedSession))
+    const auto sid = viewedSession;
+    for (auto t : controller.store.list("transcripts", sid))
         if (t["id"] == id) {
             bool ok = false;
             auto text = QInputDialog::getMultiLineText(this, QStringLiteral("修正转写"),
                                                        QStringLiteral("保存后可重新提取问题"),
                                                        t["text"].toString(), &ok);
             if (ok)
-                controller.editTranscript(viewedSession, id, text);
+                controller.editTranscript(sid, id, text);
             break;
         }
 }
@@ -552,11 +551,14 @@ void MainWindow::editQuestion() {
     auto item = questions->currentItem();
     if (!item)
         return;
+    const auto sid = viewedSession;
+    const auto id = item->data(Qt::UserRole).toString();
+    const auto initial = item->text();
     bool ok = false;
     auto text = QInputDialog::getMultiLineText(this, QStringLiteral("编辑问题"),
-                                               QStringLiteral("修改后点击重新生成回答"), item->text(), &ok);
+                                               QStringLiteral("修改后点击重新生成回答"), initial, &ok);
     if (ok)
-        controller.editQuestion(viewedSession, item->data(Qt::UserRole).toString(), text);
+        controller.editQuestion(sid, id, text);
 }
 void MainWindow::closeEvent(QCloseEvent *event) {
     if (controller.recording()) {

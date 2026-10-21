@@ -5,6 +5,8 @@
 #include <QJsonDocument>
 #include <QSet>
 #include <QStandardPaths>
+#include <QRegularExpression>
+#include <algorithm>
 SessionController::SessionController(QString root, QObject *p)
     : QObject(p), client(this), audio(this), remoteTranscriber(this), micTranscriber(this) {
     if (!store.open(root.isEmpty() ? QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
@@ -27,8 +29,8 @@ SessionController::SessionController(QString root, QObject *p)
     debounce.setInterval(800);
     deadline.setSingleShot(true);
     deadline.setInterval(4000);
-    connect(&debounce, &QTimer::timeout, this, [this] { extractNow(liveSid); });
-    connect(&deadline, &QTimer::timeout, this, [this] { extractNow(liveSid); });
+    connect(&debounce, &QTimer::timeout, this, &SessionController::extractPending);
+    connect(&deadline, &QTimer::timeout, this, &SessionController::extractPending);
     connect(&client, &TextClient::textDelta, this, [this](QString id, QString text) {
         if (!jobs.contains(id))
             return;
@@ -188,30 +190,21 @@ QString SessionController::review(QString sid) {
         return {};
     }
     // Independent source-preserving chunks prevent long sessions from silently losing early answers.
-    QList<QList<QJsonObject>> chunks;
-    QList<QJsonObject> part;
-    int count = 0;
-    for (auto row : finalized) {
-        int n = row["text"].toString().size() + 200;
-        if (count + n > 10000 && !part.isEmpty()) {
-            chunks.append(part);
-            part.clear();
-            count = 0;
-        }
-        part.append(row);
-        count += n;
-    }
-    if (!part.isEmpty())
-        chunks.append(part);
+    const auto chunks = InterviewLogic::reviewChunks(store.list("questions", sid), finalized);
     QString first;
     int index = 0;
     auto config = AppSettings().textConfig();
     auto group = newId();
     for (auto chunk : chunks) {
-        auto r = InterviewLogic::review(session, store.list("questions", sid), chunk, config);
+        auto r = InterviewLogic::review(session, chunk.questions, chunk.sources, config);
         QJsonArray refs;
-        for (auto row : chunk)
+        QJsonObject revisions;
+        QJsonArray snapshots;
+        for (auto row : chunk.sources) {
             refs.append(row["id"]);
+            revisions[row["id"].toString()] = row["revision"];
+            snapshots.append(row);
+        }
         QJsonObject rec{{"id", r.id},
                         {"sessionId", sid},
                         {"provider", config.provider},
@@ -219,12 +212,14 @@ QString SessionController::review(QString sid) {
                         {"state", "Queued"},
                         {"text", ""},
                         {"sourceIds", refs},
+                        {"sourceRevisions", revisions},
+                        {"sourceSnapshots", snapshots},
                         {"groupId", group},
                         {"part", ++index},
                         {"totalParts", chunks.size()},
                         {"createdAt", utcNow()}};
         persist("reviews", rec);
-        jobs.insert(r.id, {r, rec, chunk});
+        jobs.insert(r.id, {r, rec, chunk.sources});
         answers.enqueue(r.id);
         if (first.isEmpty())
             first = r.id;
@@ -280,13 +275,24 @@ void SessionController::complete(QString id, bool ok, QString error) {
     } else if (job.request.operation != "extract") {
         if (ok && job.request.operation == "review") {
             auto text = job.record["text"].toString();
-            bool found = false;
+            QSet<QString> allowed;
             for (auto source : job.sources)
-                if (text.contains("[" + source["id"].toString() + "]"))
+                allowed.insert(source["id"].toString());
+            bool found = false, invalid = false;
+            auto matches = QRegularExpression("\\[([^\\[\\]\\r\\n]+)\\]").globalMatch(text);
+            while (matches.hasNext()) {
+                const auto ref = matches.next().captured(1);
+                if (ref == " " || ref == "x" || ref == "X")
+                    continue;
+                if (allowed.contains(ref))
                     found = true;
-            if (!found) {
+                else
+                    invalid = true;
+            }
+            if (!found || invalid) {
                 job.record["state"] = "Failed";
-                job.record["error"] = QStringLiteral("报告未引用实际对话片段，证据不足，请重试");
+                job.record["error"] =
+                    QStringLiteral("报告缺少实际对话引用或包含未知引用，证据校验失败，请重试");
             }
         }
         persist(job.request.operation == "review" ? "reviews" : "generations", job.record);
@@ -295,7 +301,7 @@ void SessionController::complete(QString id, bool ok, QString error) {
         emit status(error);
     emit changed(sid);
     pump();
-    if (autoExtract && !pendingRemote.isEmpty() && live)
+    if (autoExtract && !pendingRemote.isEmpty())
         debounce.start();
 }
 void SessionController::cancel(QString sid) {
@@ -303,8 +309,16 @@ void SessionController::cancel(QString sid) {
     for (auto id : jobs.keys())
         if (jobs[id].request.sessionId == sid)
             ids.append(id);
-    for (auto id : ids)
+    for (auto i = pendingRemote.begin(); i != pendingRemote.end();)
+        if (i.value()["sessionId"] == sid)
+            i = pendingRemote.erase(i);
+        else
+            ++i;
+    for (auto id : ids) {
         jobs[id].record["state"] = "Cancelled";
+        if (jobs[id].request.operation != "extract")
+            persist(jobs[id].request.operation == "review" ? "reviews" : "generations", jobs[id].record);
+    }
     for (auto id : ids)
         if (jobs.contains(id)) {
             auto &job = jobs[id];
@@ -327,7 +341,6 @@ void SessionController::startRecording(QString sid, QString remoteId, QByteArray
     live = true;
     pauseState = false;
     stoppingState = false;
-    pendingRemote.clear();
     audioIssues.clear();
     pauseStarted = 0;
     auto s = get("sessions", sid, sid);
@@ -458,11 +471,13 @@ void SessionController::extractNow(QString sid) {
     if (session.isEmpty())
         return;
     QList<QJsonObject> sources;
-    if (sid == liveSid && !pendingRemote.isEmpty()) {
-        for (auto row : pendingRemote)
-            sources.append(row);
-        pendingRemote.clear();
-    } else {
+    for (auto i = pendingRemote.begin(); i != pendingRemote.end();)
+        if (i.value()["sessionId"] == sid) {
+            sources.append(i.value());
+            i = pendingRemote.erase(i);
+        } else
+            ++i;
+    if (sources.isEmpty()) {
         auto all = store.list("transcripts", sid);
         for (auto row : all)
             if (row["channel"] == "remote" && row["final"].toBool())
@@ -483,6 +498,10 @@ void SessionController::extractNow(QString sid) {
     activeExtraction = r.id;
     client.start(r);
     emit status(QStringLiteral("正在提取面试官问题…"));
+}
+void SessionController::extractPending() {
+    if (autoExtract && !pendingRemote.isEmpty())
+        extractNow(pendingRemote.constBegin().value()["sessionId"].toString());
 }
 void SessionController::editTranscript(QString sid, QString id, QString text) {
     auto row = get("transcripts", sid, id);

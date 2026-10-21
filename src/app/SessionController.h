@@ -67,5 +67,6 @@ class SessionController : public QObject {
     void pump();
     void complete(QString id, bool ok, QString error = {});
     void acceptSegment(QJsonObject);
+    void extractPending();
     void finishNow();
 };

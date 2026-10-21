@@ -1,9 +1,22 @@
 #include "transcription/TranscriptAssembler.h"
 #include "transcription/RealtimeTranscriber.h"
+#include "transcription/TurnTracker.h"
 #include <QtTest>
 class TranscriptionTest : public QObject {
     Q_OBJECT
   private slots:
+    void retiresUnacknowledgedTurnsBeforeReconnect() {
+        TurnTracker tracker;
+        tracker.queuedCommit(100, 500);
+        auto lost = tracker.retireConnection();
+        QCOMPARE(lost.size(), 1);
+        QCOMPARE(lost[0], TurnTracker::Range(100, 500));
+        tracker.queuedCommit(1000, 1500);
+        tracker.acknowledge("new");
+        QCOMPARE(tracker.rangeFor("new", {0, 0}), TurnTracker::Range(1000, 1500));
+        tracker.completed("new");
+        QVERIFY(!tracker.pending());
+    }
     void reportsBufferedAudioAsUnfinishedWhenNoConnection() {
         RealtimeTranscriber transcriber;
         ProviderConfig config;
