@@ -1,0 +1,7 @@
+build*/
+dist/
+.deps/
+.superpowers/
+*.user
+*.log
+window-test.txt
