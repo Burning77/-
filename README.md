@@ -2,6 +2,13 @@
 
 Windows 桌面面试记录工具：双路录音、实时中文转写、问题提取、OpenAI GPT / DeepSeek 流式参考回答、面试复盘和 Markdown 导出。
 
+## 0.1.1 卡顿修复
+
+- 未配置语音转写服务时只进行本地录音，显示“仅本地录音”，不缓存音频或反复生成缺失提示。
+- 连续转写缺失按通道合并并定期保存，界面和流式回答按短间隔批量更新。
+- 旧会话中大量连续缺失提示会合并显示，原始数据库记录保留。
+- 修复包位于 `dist/InterviewAssistant-0.1.1`，标题栏显示 `0.1.1`。退出旧程序后运行新版；会话数据目录和凭据位置保持一致。
+
 ## 功能
 
 - WASAPI 回环采集所选播放设备，QAudioSource 采集麦克风；两路 WAV 分别保留。
@@ -21,6 +28,8 @@ Qt 组件需要 Widgets、Multimedia、Network、SQL 和 Test。转写的 WebSoc
 pwsh -File scripts/build.ps1 -BuildRoot E:/project/InterviewAssistant-build
 pwsh -File scripts/test.ps1
 pwsh -File scripts/package.ps1 -BuildRoot E:/project/InterviewAssistant-build
+# 输出到独立的修复包目录：
+pwsh -File scripts/package.ps1 -BuildRoot E:/project/InterviewAssistant-build -PackageName InterviewAssistant-0.1.1
 ```
 
 脚本默认使用 `D:/Qt/6.11.2/mingw_64` 和 `D:/Qt/Tools` 中的配套工具。源码路径含中文时，将源码复制到指定英文目录编译，再把可执行文件复制回工程。`-BuildRoot` 应使用专门的英文目录；未指定则使用临时目录中的工程专用子目录。不更改系统 PATH 或全局 Qt 安装。

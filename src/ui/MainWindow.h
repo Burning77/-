@@ -34,6 +34,8 @@ class MainWindow : public QMainWindow {
     QProgressBar *remoteLevel, *micLevel;
     QMediaPlayer player;
     QAudioOutput output;
+    QTimer refreshTimer;
+    QSet<QString> dirtySessions;
     void refreshHistory();
     void refresh();
     void refreshAnswers();

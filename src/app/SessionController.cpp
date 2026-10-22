@@ -31,6 +31,12 @@ SessionController::SessionController(QString root, QObject *p)
     deadline.setInterval(4000);
     connect(&debounce, &QTimer::timeout, this, &SessionController::extractPending);
     connect(&deadline, &QTimer::timeout, this, &SessionController::extractPending);
+    gapFlushTimer.setSingleShot(true);
+    gapFlushTimer.setInterval(500);
+    connect(&gapFlushTimer, &QTimer::timeout, this, &SessionController::flushGaps);
+    generationFlushTimer.setSingleShot(true);
+    generationFlushTimer.setInterval(100);
+    connect(&generationFlushTimer, &QTimer::timeout, this, &SessionController::flushGenerations);
     connect(&client, &TextClient::textDelta, this, [this](QString id, QString text) {
         if (!jobs.contains(id))
             return;
@@ -39,8 +45,9 @@ SessionController::SessionController(QString root, QObject *p)
             return;
         job.record["text"] = job.record["text"].toString() + text;
         if (job.request.operation != "extract") {
-            persist(job.request.operation == "review" ? "reviews" : "generations", job.record);
-            emit changed(job.request.sessionId);
+            dirtyJobs.insert(id);
+            if (!generationFlushTimer.isActive())
+                generationFlushTimer.start();
         }
     });
     connect(&client, &TextClient::finished, this, [this](QString id) { complete(id, true); });
@@ -64,20 +71,67 @@ SessionController::SessionController(QString root, QObject *p)
     for (auto t : {&remoteTranscriber, &micTranscriber}) {
         connect(t, &RealtimeTranscriber::segmentChanged, this, &SessionController::acceptSegment);
         connect(t, &RealtimeTranscriber::status, this, &SessionController::transcriptionStatus);
-        connect(t, &RealtimeTranscriber::gap, this, [this](QString ch, qint64 start, qint64 end) {
-            persist("gaps", {{"id", newId()},
-                             {"sessionId", liveSid},
-                             {"channel", ch},
-                             {"startMs", start},
-                             {"endMs", end}});
-            emit changed(liveSid);
-        });
+        connect(t, &RealtimeTranscriber::gap, this, &SessionController::recordGap);
     }
 }
 SessionController::~SessionController() {
+    blockSignals(true);
+    flushGenerations();
+    flushGaps();
     audio.stop();
     remoteTranscriber.stop();
     micTranscriber.stop();
+}
+void SessionController::recordGap(QString channel, qint64 start, qint64 end) {
+    if (!live || start < 0 || end < start)
+        return;
+    auto previous = gapRows.value(channel);
+    if (!previous.isEmpty() && start <= previous["endMs"].toInteger() + 20 &&
+        end >= previous["startMs"].toInteger()) {
+        previous["startMs"] = qMin(start, previous["startMs"].toInteger());
+        previous["endMs"] = qMax(end, previous["endMs"].toInteger());
+    } else {
+        // Save a separate interval before replacing its pending record.
+        if (dirtyGapChannels.contains(channel))
+            persist("gaps", previous);
+        previous = {{"id", newId()},
+                    {"sessionId", liveSid},
+                    {"channel", channel},
+                    {"startMs", start},
+                    {"endMs", end}};
+    }
+    gapRows[channel] = previous;
+    dirtyGapChannels.insert(channel);
+    if (!gapFlushTimer.isActive())
+        gapFlushTimer.start();
+}
+void SessionController::flushGaps() {
+    gapFlushTimer.stop();
+    QSet<QString> sessions;
+    const auto channels = dirtyGapChannels;
+    dirtyGapChannels.clear();
+    for (auto channel : channels) {
+        const auto row = gapRows.value(channel);
+        if (persist("gaps", row))
+            sessions.insert(row["sessionId"].toString());
+    }
+    for (auto sid : sessions)
+        emit changed(sid);
+}
+void SessionController::flushGenerations() {
+    generationFlushTimer.stop();
+    QSet<QString> sessions;
+    const auto ids = dirtyJobs;
+    dirtyJobs.clear();
+    for (auto id : ids) {
+        if (!jobs.contains(id))
+            continue;
+        const auto &job = jobs[id];
+        if (persist(job.request.operation == "review" ? "reviews" : "generations", job.record))
+            sessions.insert(job.request.sessionId);
+    }
+    for (auto sid : sessions)
+        emit changed(sid);
 }
 QJsonObject SessionController::get(QString kind, QString sid, QString id) const {
     for (auto row : store.list(kind, sid))
@@ -232,6 +286,7 @@ void SessionController::complete(QString id, bool ok, QString error) {
     if (!jobs.contains(id))
         return;
     auto job = jobs.take(id);
+    dirtyJobs.remove(id);
     auto sid = job.request.sessionId;
     if (activeAnswer == id)
         activeAnswer.clear();
@@ -334,6 +389,8 @@ void SessionController::cancel(QString sid) {
 void SessionController::startRecording(QString sid, QString remoteId, QByteArray microphoneId) {
     if (live || get("sessions", sid, sid).isEmpty())
         return;
+    flushGaps();
+    gapRows.clear();
     liveSid = sid;
     remoteDevice = remoteId;
     micDevice = microphoneId;
@@ -386,6 +443,7 @@ void SessionController::finish() {
     audio.stop();
     remoteTranscriber.finish();
     micTranscriber.finish();
+    flushGaps();
     auto s = get("sessions", liveSid, liveSid);
     s["state"] = "stopping";
     persist("sessions", s);
@@ -396,6 +454,7 @@ void SessionController::finish() {
 void SessionController::finishNow() {
     if (!live || !stoppingState)
         return;
+    flushGaps();
     bool incomplete = false;
     for (auto ch : QStringList{"remote", "microphone"}) {
         bool pending =

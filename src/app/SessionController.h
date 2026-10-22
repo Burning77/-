@@ -6,6 +6,7 @@
 #include <QElapsedTimer>
 #include <QObject>
 #include <QQueue>
+#include <QSet>
 #include <QTimer>
 class SessionController : public QObject {
     Q_OBJECT
@@ -57,7 +58,9 @@ class SessionController : public QObject {
     QByteArray micDevice;
     RealtimeTranscriber remoteTranscriber, micTranscriber;
     QHash<QString, QJsonObject> pendingRemote;
-    QTimer debounce, deadline;
+    QTimer debounce, deadline, gapFlushTimer, generationFlushTimer;
+    QHash<QString, QJsonObject> gapRows;
+    QSet<QString> dirtyGapChannels, dirtyJobs;
     QElapsedTimer clock;
     qint64 pauseStarted = 0;
     QStringList audioIssues;
@@ -68,5 +71,8 @@ class SessionController : public QObject {
     void complete(QString id, bool ok, QString error = {});
     void acceptSegment(QJsonObject);
     void extractPending();
+    void recordGap(QString channel, qint64 start, qint64 end);
+    void flushGaps();
+    void flushGenerations();
     void finishNow();
 };

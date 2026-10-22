@@ -17,15 +17,18 @@ class TranscriptionTest : public QObject {
         tracker.completed("new");
         QVERIFY(!tracker.pending());
     }
-    void reportsBufferedAudioAsUnfinishedWhenNoConnection() {
+    void doesNotBufferAudioWhenTranscriptionIsUnconfigured() {
         RealtimeTranscriber transcriber;
+        QSignalSpy gaps(&transcriber, &RealtimeTranscriber::gap);
         ProviderConfig config;
         config.provider = "Transcription";
         config.baseUrl = "invalid";
         transcriber.connectSession("session", "remote", config);
-        transcriber.appendAudio(QByteArray(4800, 0), 0);
+        for (int i = 0; i < 600; ++i)
+            transcriber.appendAudio(QByteArray(4800, 0), i * 100);
         transcriber.finish();
-        QVERIFY(transcriber.hasUnfinishedAudio());
+        QVERIFY(gaps.isEmpty());
+        QVERIFY(!transcriber.hasUnfinishedAudio());
         transcriber.stop();
         QVERIFY(!transcriber.hasUnfinishedAudio());
     }

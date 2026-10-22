@@ -3,6 +3,7 @@
 #include <QFontDatabase>
 #include <QInputDialog>
 #include <QTimer>
+#include <QtTest>
 static QPushButton *button(QWidget &w, const QString &text) {
     for (auto b : w.findChildren<QPushButton *>())
         if (b->text() == text)
@@ -16,6 +17,13 @@ static QListWidget *questionList(QWidget &w) {
     return nullptr;
 }
 static void selectSession(QWidget &w, const QString &sid) {
+    auto findCombo = [&]() -> QComboBox * {
+        for (auto combo : w.findChildren<QComboBox *>())
+            if (combo->findData(sid) >= 0)
+                return combo;
+        return nullptr;
+    };
+    QTRY_VERIFY_WITH_TIMEOUT(findCombo(), 1000);
     for (auto combo : w.findChildren<QComboBox *>()) {
         int i = combo->findData(sid);
         if (i >= 0) {
@@ -26,10 +34,39 @@ static void selectSession(QWidget &w, const QString &sid) {
 }
 #include <QListWidget>
 #include <QPushButton>
-#include <QtTest>
 class WindowTest : public QObject {
     Q_OBJECT
   private slots:
+    void batchesRepeatedRefreshNotifications() {
+        QTemporaryDir dir;
+        MainWindow w(nullptr, dir.path());
+        auto c = w.findChild<SessionController *>();
+        auto sid = c->createSession("refresh", "", "");
+        selectSession(w, sid);
+        auto list = w.findChild<QListWidget *>("transcriptList");
+        QSignalSpy resets(list->model(), &QAbstractItemModel::modelReset);
+        for (int i = 0; i < 300; ++i)
+            c->changed(sid);
+        QCOMPARE(resets.size(), 0);
+        QTRY_VERIFY_WITH_TIMEOUT(!resets.isEmpty(), 1000);
+        QVERIFY(resets.size() <= 2);
+    }
+    void mergesLegacyGapFloodForDisplay() {
+        QTemporaryDir dir;
+        MainWindow w(nullptr, dir.path());
+        auto c = w.findChild<SessionController *>();
+        auto sid = c->createSession("legacy", "", "");
+        for (int i = 0; i < 300; ++i)
+            QVERIFY(c->store.put("gaps", {{"id", newId()},
+                                          {"sessionId", sid},
+                                          {"channel", "remote"},
+                                          {"startMs", i * 10},
+                                          {"endMs", (i + 1) * 10}}));
+        selectSession(w, sid);
+        auto list = w.findChild<QListWidget *>("transcriptList");
+        QTRY_VERIFY_WITH_TIMEOUT(list->count() > 0, 1000);
+        QCOMPARE(list->count(), 1);
+    }
     void oldAnswerCallbackDoesNotExitNewDraft() {
         QTemporaryDir dir(QDir::currentPath() + "/draft-XXXXXX");
         MainWindow w(nullptr, dir.path());

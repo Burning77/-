@@ -38,7 +38,7 @@ class RealtimeTranscriber : public QObject {
     TranscriptAssembler assembler;
     QByteArray pending;
     qint64 pendingStart = 0, turnStart = 0, endMs = 0, lastVoice = 0, sentBytes = 0;
-    bool ready = false, closing = true, voice = false;
+    bool ready = false, closing = true, voice = false, inputEnabled = false;
     int retries = 0;
     TurnTracker tracker;
 };

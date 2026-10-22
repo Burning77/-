@@ -5,6 +5,7 @@ int main(int argc, char **argv) {
     QApplication app(argc, argv);
     app.setOrganizationName("LocalInterviewTools");
     app.setApplicationName("InterviewAssistant");
+    app.setApplicationVersion(INTERVIEW_APP_VERSION);
     QCommandLineParser parser;
     parser.setApplicationDescription(QStringLiteral("Qt 面试记录与复盘助手"));
     parser.addHelpOption();

@@ -24,9 +24,11 @@ void RealtimeTranscriber::connectSocket() {
     QUrl url(config.baseUrl);
     if (key.isEmpty() || url.scheme() != "wss" || url.host().isEmpty() || key.contains('\n') ||
         key.contains('\r')) {
-        emit status(channel, QStringLiteral("转写未启动：请配置 WSS 地址与独立 API Key"));
+        inputEnabled = false;
+        emit status(channel, QStringLiteral("仅本地录音，未启用转写：请配置 WSS 地址与独立 API Key"));
         return;
     }
+    inputEnabled = true;
     auto ws = new WebSocketTransport(url, key, this);
     transport = ws;
     connect(ws, &WebSocketTransport::connected, this, [this, ws] {
@@ -82,7 +84,7 @@ void RealtimeTranscriber::connectSocket() {
     ws->start();
 }
 void RealtimeTranscriber::appendAudio(const QByteArray &pcm, qint64 start) {
-    if (closing || pcm.isEmpty())
+    if (closing || !inputEnabled || pcm.isEmpty())
         return;
     if (pending.isEmpty())
         pendingStart = start;
@@ -188,6 +190,7 @@ void RealtimeTranscriber::finish(bool closeInput) {
 }
 void RealtimeTranscriber::stop() {
     closing = true;
+    inputEnabled = false;
     ready = false;
     pending.clear();
     tracker.retireConnection();

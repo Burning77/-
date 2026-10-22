@@ -17,6 +17,40 @@ class SessionTest : public QObject {
     Q_OBJECT
     QTemporaryDir settings;
   private slots:
+    void coalescesContinuousGapNotifications() {
+        QTemporaryDir data;
+        SessionController c(data.path());
+        c.audio.renderFactory = [](const QString &) -> AudioSource * { return new IdleSource; };
+        c.audio.microphoneFactory = [](const QByteArray &) -> AudioSource * { return new IdleSource; };
+        auto sid = c.createSession("overflow", "", "");
+        c.startRecording(sid, "fixture", {});
+        QSignalSpy changes(&c, &SessionController::changed);
+        auto transcriber = c.findChildren<RealtimeTranscriber *>().first();
+        for (int i = 0; i < 300; ++i)
+            transcriber->gap("remote", i * 10, (i + 1) * 10);
+        QVERIFY(changes.size() <= 1);
+        QTRY_COMPARE_WITH_TIMEOUT(c.store.list("gaps", sid).size(), 1, 2000);
+        auto gap = c.store.list("gaps", sid).first();
+        QCOMPARE(gap["startMs"].toInteger(), qint64(0));
+        QCOMPARE(gap["endMs"].toInteger(), qint64(3000));
+        QVERIFY(changes.size() <= 2);
+    }
+    void batchesStreamingUpdatesAndFlushesCompletion() {
+        QTemporaryDir data;
+        SessionController c(data.path());
+        c.client.keyReader = [](const QString &) { return QString(); };
+        auto sid = c.createSession("stream", "", "");
+        auto qid = c.addQuestion(sid, "question", false);
+        auto request = c.answerQuestion(sid, qid, ProviderConfig());
+        QSignalSpy changes(&c, &SessionController::changed);
+        for (int i = 0; i < 300; ++i)
+            c.client.textDelta(request, "a");
+        QVERIFY(changes.size() <= 1);
+        c.client.finished(request);
+        auto rows = c.store.list("generations", sid);
+        QCOMPARE(rows.first()["text"].toString(), QString(300, 'a'));
+        QCOMPARE(rows.first()["state"].toString(), QString("Completed"));
+    }
     void initTestCase() {
         QCoreApplication::setOrganizationName("InterviewAssistantTests");
         QCoreApplication::setApplicationName("SessionRegression");

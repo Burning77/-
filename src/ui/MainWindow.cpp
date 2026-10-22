@@ -39,7 +39,7 @@ static QString stateName(QString s) {
 }
 MainWindow::MainWindow(QWidget *parent, QString dataRoot)
     : QMainWindow(parent), controller(dataRoot, this), player(this), output(this) {
-    setWindowTitle(QStringLiteral("面试助手 · 实时记录与复盘"));
+    setWindowTitle(QStringLiteral("面试助手 · 实时记录与复盘 · ") + QStringLiteral(INTERVIEW_APP_VERSION));
     resize(1450, 900);
     setStyleSheet(QStringLiteral(
         "QMainWindow{background:#f3f6fb} QWidget{font-family:'Microsoft YaHei "
@@ -249,8 +249,17 @@ MainWindow::MainWindow(QWidget *parent, QString dataRoot)
         refresh();
     });
     connect(&controller, &SessionController::changed, this, [this](QString sid) {
+        dirtySessions.insert(sid);
+        if (!refreshTimer.isActive())
+            refreshTimer.start();
+    });
+    refreshTimer.setSingleShot(true);
+    refreshTimer.setInterval(100);
+    connect(&refreshTimer, &QTimer::timeout, this, [this] {
+        const bool currentChanged = dirtySessions.contains(viewedSession);
+        dirtySessions.clear();
         refreshHistory();
-        if (viewedSession == sid)
+        if (currentChanged)
             refresh();
     });
     connect(&controller, &SessionController::status, this,
@@ -390,10 +399,33 @@ void MainWindow::refresh() {
             if (row["id"] == selected)
                 transcripts->setCurrentItem(item);
         }
-        for (auto gap : controller.store.list("gaps", viewedSession)) {
+        auto gaps = controller.store.list("gaps", viewedSession);
+        // Old versions saved one row per audio callback. Merge only the presentation,
+        // retaining the original database records and separate channel/pause boundaries.
+        std::stable_sort(gaps.begin(), gaps.end(), [](const auto &a, const auto &b) {
+            if (a["channel"] != b["channel"])
+                return a["channel"].toString() < b["channel"].toString();
+            if (a["reason"] != b["reason"])
+                return a["reason"].toString() < b["reason"].toString();
+            return a["startMs"].toInteger() < b["startMs"].toInteger();
+        });
+        QList<QJsonObject> merged;
+        for (auto gap : gaps) {
+            if (!merged.isEmpty() && merged.last()["channel"] == gap["channel"] &&
+                merged.last()["reason"] == gap["reason"] &&
+                gap["startMs"].toInteger() <= merged.last()["endMs"].toInteger() + 20) {
+                merged.last()["endMs"] = qMax(merged.last()["endMs"].toInteger(), gap["endMs"].toInteger());
+            } else
+                merged.append(gap);
+        }
+        std::stable_sort(merged.begin(), merged.end(), [](const auto &a, const auto &b) {
+            return a["startMs"].toInteger() < b["startMs"].toInteger();
+        });
+        for (auto gap : merged) {
             auto item = new QListWidgetItem(
-                QStringLiteral("⚠ %1–%2：%3")
+                QStringLiteral("⚠ %1–%2 · %3：%4")
                     .arg(timestamp(gap["startMs"].toInteger()), timestamp(gap["endMs"].toInteger()),
+                         gap["channel"] == "remote" ? QStringLiteral("远端") : QStringLiteral("麦克风"),
                          gap["reason"] == "paused" ? QStringLiteral("暂停区间")
                                                    : QStringLiteral("转写缺失区间")),
                 transcripts);
