@@ -19,11 +19,13 @@ class MainWindow : public QMainWindow {
 
   protected:
     void closeEvent(QCloseEvent *) override;
+    void showEvent(QShowEvent *) override;
 
   private:
     SessionController controller;
     QString viewedSession;
     bool closingAfterFinish = false;
+    bool initiallyPositioned = false;
     QComboBox *history, *provider, *remoteDevice, *micDevice;
     QLineEdit *title, *role, *manual;
     QPlainTextEdit *experience;

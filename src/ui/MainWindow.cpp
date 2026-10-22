@@ -19,6 +19,9 @@
 #include <QTabWidget>
 #include <QTimer>
 #include <QVBoxLayout>
+#include <QScreen>
+#include <QShowEvent>
+#include <QWindow>
 #include <algorithm>
 static QString timestamp(qint64 ms) {
     auto sec = ms / 1000;
@@ -26,6 +29,26 @@ static QString timestamp(qint64 ms) {
         .arg(sec / 3600, 2, 10, QChar('0'))
         .arg((sec / 60) % 60, 2, 10, QChar('0'))
         .arg(sec % 60, 2, 10, QChar('0'));
+}
+void MainWindow::showEvent(QShowEvent *event) {
+    QMainWindow::showEvent(event);
+    if (initiallyPositioned)
+        return;
+    initiallyPositioned = true;
+    if (auto primary = QGuiApplication::primaryScreen()) {
+        if (windowHandle())
+            windowHandle()->setScreen(primary);
+        // Wait for native frame margins before centering, including the title bar.
+        QTimer::singleShot(0, this, [this] {
+            if (auto primary = QGuiApplication::primaryScreen()) {
+                if (auto native = windowHandle()) {
+                    auto frame = native->frameGeometry();
+                    frame.moveCenter(primary->availableGeometry().center());
+                    native->setFramePosition(frame.topLeft());
+                }
+            }
+        });
+    }
 }
 static QString stateName(QString s) {
     static QHash<QString, QString> labels{

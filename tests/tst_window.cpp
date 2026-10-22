@@ -5,6 +5,8 @@
 #include <QFontDatabase>
 #include <QInputDialog>
 #include <QTimer>
+#include <QScreen>
+#include <QWindow>
 #include <QtTest>
 static QPushButton *button(QWidget &w, const QString &text) {
     for (auto b : w.findChildren<QPushButton *>())
@@ -39,6 +41,24 @@ static void selectSession(QWidget &w, const QString &sid) {
 class WindowTest : public QObject {
     Q_OBJECT
   private slots:
+    void firstShowCentersOnPrimaryAndKeepsLaterMoves() {
+        QTemporaryDir dir(QDir::currentPath() + "/position-XXXXXX");
+        MainWindow w(nullptr, dir.path());
+        auto primary = QGuiApplication::primaryScreen();
+        QVERIFY(primary);
+        const auto available = primary->availableGeometry();
+        w.move(available.topLeft() + QPoint(17, 19));
+        w.show();
+        QTest::qWait(60);
+        QTRY_COMPARE(w.windowHandle()->screen(), primary);
+        QTRY_VERIFY((w.frameGeometry().center() - available.center()).manhattanLength() <= 2);
+        w.move(available.topLeft() + QPoint(31, 37));
+        const auto moved = w.pos();
+        w.hide();
+        w.show();
+        QTest::qWait(30);
+        QCOMPARE(w.pos(), moved);
+    }
     void offersChatGptLoginAndLocalSpeech() {
         QFontDatabase::addApplicationFont(QStringLiteral("C:/Windows/Fonts/msyh.ttc"));
         QApplication::setFont(QFont("Microsoft YaHei", 9));

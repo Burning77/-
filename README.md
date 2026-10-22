@@ -2,6 +2,10 @@
 
 Windows 桌面面试记录工具：双路录音、实时中文转写、问题提取、OpenAI GPT / DeepSeek 流式参考回答、面试复盘和 Markdown 导出。
 
+## 0.2.1：启动位置修复
+
+首次显示时指定主屏幕，按排除任务栏的可用区域将整个窗口居中。窗口之后手动移动、隐藏或恢复时保留当前位置。运行包 `dist/InterviewAssistant-0.2.1`，退出旧版后打开新版。
+
 ## 0.2.0：本地中文识别与 ChatGPT 套餐
 
 运行包：`dist/InterviewAssistant-0.2.0-win64.zip`。完整解压后运行同目录的 `InterviewAssistant.exe`，保留 `local-asr` 目录。包内附带 Vosk small-cn-0.22 中文模型，默认在本机识别，无需语音 API Key。模型首次加载需要数秒，状态显示“本地中文识别已就绪”后说话。识别在线程中执行；临时文本会修订，停顿后形成最终文本。
