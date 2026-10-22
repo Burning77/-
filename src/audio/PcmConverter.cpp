@@ -6,7 +6,7 @@
 QByteArray PcmConverter::process(const QByteArray &bytes) {
     QByteArray out;
     int frameSize = format.bytesPerFrame();
-    if (frameSize <= 0 || format.sampleRate() <= 0)
+    if (frameSize <= 0 || format.sampleRate() <= 0 || outputRate <= 0)
         return out;
     tail += bytes;
     int frames = tail.size() / frameSize;
@@ -37,7 +37,7 @@ QByteArray PcmConverter::process(const QByteArray &bytes) {
         samples.append(std::clamp(mono / format.channelCount(), -1.f, 1.f));
     }
     tail.remove(0, frames * frameSize);
-    double step = double(format.sampleRate()) / 24000.;
+    double step = double(format.sampleRate()) / outputRate;
     while (position + 1 < samples.size()) {
         int i = int(position);
         float value = samples[i] + float(position - i) * (samples[i + 1] - samples[i]);

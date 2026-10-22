@@ -1,4 +1,18 @@
 #include "AppSettings.h"
+#include <QCoreApplication>
+QString AppSettings::transcriptionMode() const {
+    return QSettings().value("transcription/mode", "Local").toString();
+}
+QString AppSettings::localModelPath() const {
+    return QSettings()
+        .value("transcription/localModel", QCoreApplication::applicationDirPath() + "/local-asr/model")
+        .toString();
+}
+void AppSettings::saveLocalTranscription(QString mode, QString path) {
+    QSettings s;
+    s.setValue("transcription/mode", mode);
+    s.setValue("transcription/localModel", path);
+}
 ProviderConfig AppSettings::config(const QString &provider) const {
     QSettings s;
     ProviderConfig c;
@@ -7,6 +21,10 @@ ProviderConfig AppSettings::config(const QString &provider) const {
                         provider == "DeepSeek" ? "https://api.deepseek.com" : "https://api.openai.com/v1")
                     .toString();
     c.model = s.value(provider + "/model", provider == "DeepSeek" ? "deepseek-flash" : "").toString();
+    if (provider == "ChatGPT") {
+        c.baseUrl = "https://api.openai.com/v1";
+        c.accountId = s.value("chatgpt/active").toString();
+    }
     return c;
 }
 ProviderConfig AppSettings::textConfig() const {

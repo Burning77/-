@@ -3,6 +3,7 @@
 #include "audio/AudioController.h"
 #include "storage/SessionStore.h"
 #include "transcription/RealtimeTranscriber.h"
+#include "transcription/LocalTranscriber.h"
 #include <QElapsedTimer>
 #include <QObject>
 #include <QQueue>
@@ -57,6 +58,8 @@ class SessionController : public QObject {
     QString activeAnswer, activeExtraction, liveSid, remoteDevice;
     QByteArray micDevice;
     RealtimeTranscriber remoteTranscriber, micTranscriber;
+    LocalTranscriber localRemote, localMic;
+    bool usingLocalAsr = false;
     QHash<QString, QJsonObject> pendingRemote;
     QTimer debounce, deadline, gapFlushTimer, generationFlushTimer;
     QHash<QString, QJsonObject> gapRows;

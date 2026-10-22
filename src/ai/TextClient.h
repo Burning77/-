@@ -3,6 +3,7 @@
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QObject>
+#include <QSet>
 #include <functional>
 class TextClient : public QObject {
     Q_OBJECT
@@ -20,4 +21,7 @@ class TextClient : public QObject {
   private:
     QNetworkAccessManager manager;
     QHash<QString, QNetworkReply *> replies;
+    QHash<QString, QString> profileRequests;
+    QSet<QString> pendingAuth;
+    QString begin(const TextRequest &, const QString &key);
 };

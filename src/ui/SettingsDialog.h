@@ -19,6 +19,11 @@ class SettingsDialog : public QDialog {
     QList<Fields> fields;
     QComboBox *selected;
     TextClient client;
+    QComboBox *accounts = nullptr, *planModels = nullptr, *speechMode = nullptr;
+    QLineEdit *localModel = nullptr;
+    QLabel *planStatus = nullptr;
+    void reloadAccounts();
+    void loadPlanModels();
     bool save();
     void test(int index);
 };

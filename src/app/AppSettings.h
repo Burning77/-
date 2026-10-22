@@ -9,4 +9,7 @@ class AppSettings {
     void select(const QString &provider);
     ProviderConfig transcription() const;
     void saveTranscription(const ProviderConfig &);
+    QString transcriptionMode() const;
+    QString localModelPath() const;
+    void saveLocalTranscription(QString mode, QString modelPath);
 };

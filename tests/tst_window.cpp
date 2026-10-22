@@ -1,4 +1,6 @@
 #include "ui/MainWindow.h"
+#include "ui/SettingsDialog.h"
+#include "app/AppSettings.h"
 #include <QComboBox>
 #include <QFontDatabase>
 #include <QInputDialog>
@@ -37,8 +39,17 @@ static void selectSession(QWidget &w, const QString &sid) {
 class WindowTest : public QObject {
     Q_OBJECT
   private slots:
+    void offersChatGptLoginAndLocalSpeech() {
+        QTemporaryDir dir(QDir::currentPath() + "/window-XXXXXX");
+        MainWindow w(nullptr, dir.path());
+        auto provider = w.findChild<QComboBox *>("providerCombo");
+        QVERIFY(provider->findText("ChatGPT") >= 0);
+        SettingsDialog settings;
+        QVERIFY(settings.findChild<QPushButton *>("chatgptLoginButton"));
+        QVERIFY(settings.findChild<QComboBox *>("transcriptionMode"));
+    }
     void batchesRepeatedRefreshNotifications() {
-        QTemporaryDir dir;
+        QTemporaryDir dir(QDir::currentPath() + "/window-XXXXXX");
         MainWindow w(nullptr, dir.path());
         auto c = w.findChild<SessionController *>();
         auto sid = c->createSession("refresh", "", "");
@@ -52,7 +63,7 @@ class WindowTest : public QObject {
         QVERIFY(resets.size() <= 2);
     }
     void mergesLegacyGapFloodForDisplay() {
-        QTemporaryDir dir;
+        QTemporaryDir dir(QDir::currentPath() + "/window-XXXXXX");
         MainWindow w(nullptr, dir.path());
         auto c = w.findChild<SessionController *>();
         auto sid = c->createSession("legacy", "", "");

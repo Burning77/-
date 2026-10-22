@@ -8,7 +8,8 @@
 #include <QRegularExpression>
 #include <algorithm>
 SessionController::SessionController(QString root, QObject *p)
-    : QObject(p), client(this), audio(this), remoteTranscriber(this), micTranscriber(this) {
+    : QObject(p), client(this), audio(this), remoteTranscriber(this), micTranscriber(this), localRemote(this),
+      localMic(this) {
     if (!store.open(root.isEmpty() ? QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
                                    : root))
         QTimer::singleShot(0, this,
@@ -54,7 +55,10 @@ SessionController::SessionController(QString root, QObject *p)
     connect(&client, &TextClient::failed, this,
             [this](QString id, QString error) { complete(id, false, error); });
     connect(&audio, &AudioController::pcmReady, this, [this](QString ch, QByteArray pcm, qint64 ms) {
-        (ch == "remote" ? remoteTranscriber : micTranscriber).appendAudio(pcm, ms);
+        if (usingLocalAsr)
+            (ch == "remote" ? localRemote : localMic).appendAudio(pcm, ms);
+        else
+            (ch == "remote" ? remoteTranscriber : micTranscriber).appendAudio(pcm, ms);
     });
     connect(&audio, &AudioController::segmentSaved, this, [this](QJsonObject row) {
         if (!row.isEmpty())
@@ -73,6 +77,11 @@ SessionController::SessionController(QString root, QObject *p)
         connect(t, &RealtimeTranscriber::status, this, &SessionController::transcriptionStatus);
         connect(t, &RealtimeTranscriber::gap, this, &SessionController::recordGap);
     }
+    for (auto t : {&localRemote, &localMic}) {
+        connect(t, &LocalTranscriber::segmentChanged, this, &SessionController::acceptSegment);
+        connect(t, &LocalTranscriber::status, this, &SessionController::transcriptionStatus);
+        connect(t, &LocalTranscriber::gap, this, &SessionController::recordGap);
+    }
 }
 SessionController::~SessionController() {
     blockSignals(true);
@@ -81,6 +90,8 @@ SessionController::~SessionController() {
     audio.stop();
     remoteTranscriber.stop();
     micTranscriber.stop();
+    localRemote.stop();
+    localMic.stop();
 }
 void SessionController::recordGap(QString channel, qint64 start, qint64 end) {
     if (!live || start < 0 || end < start)
@@ -404,8 +415,15 @@ void SessionController::startRecording(QString sid, QString remoteId, QByteArray
     s["state"] = "recording";
     persist("sessions", s);
     auto config = AppSettings().transcription();
-    remoteTranscriber.connectSession(sid, "remote", config);
-    micTranscriber.connectSession(sid, "microphone", config);
+    usingLocalAsr = AppSettings().transcriptionMode() == "Local";
+    if (usingLocalAsr) {
+        auto model = AppSettings().localModelPath();
+        localRemote.connectSession(sid, "remote", model);
+        localMic.connectSession(sid, "microphone", model);
+    } else {
+        remoteTranscriber.connectSession(sid, "remote", config);
+        micTranscriber.connectSession(sid, "microphone", config);
+    }
     audio.start(store.root(), sid, remoteId, microphoneId, 0);
     emit stateChanged();
     emit status(QStringLiteral("正在录音；转写连接状态见设备下方"));
@@ -419,6 +437,8 @@ void SessionController::togglePause() {
         audio.stop();
         remoteTranscriber.finish(false);
         micTranscriber.finish(false);
+        localRemote.finish(false);
+        localMic.finish(false);
     } else {
         for (auto ch : QStringList{"remote", "microphone"})
             persist("gaps", {{"id", newId()},
@@ -443,6 +463,8 @@ void SessionController::finish() {
     audio.stop();
     remoteTranscriber.finish();
     micTranscriber.finish();
+    localRemote.finish();
+    localMic.finish();
     flushGaps();
     auto s = get("sessions", liveSid, liveSid);
     s["state"] = "stopping";
@@ -457,8 +479,10 @@ void SessionController::finishNow() {
     flushGaps();
     bool incomplete = false;
     for (auto ch : QStringList{"remote", "microphone"}) {
-        bool pending =
-            ch == "remote" ? remoteTranscriber.hasUnfinishedAudio() : micTranscriber.hasUnfinishedAudio();
+        bool pending = usingLocalAsr ? (ch == "remote" ? localRemote.hasUnfinishedAudio()
+                                                       : localMic.hasUnfinishedAudio())
+                                     : (ch == "remote" ? remoteTranscriber.hasUnfinishedAudio()
+                                                       : micTranscriber.hasUnfinishedAudio());
         if (pending) {
             qint64 start = 0;
             for (auto t : store.list("transcripts", liveSid))
@@ -485,6 +509,8 @@ void SessionController::finishNow() {
             incomplete = true;
     remoteTranscriber.stop();
     micTranscriber.stop();
+    localRemote.stop();
+    localMic.stop();
     auto s = get("sessions", liveSid, liveSid);
     s["state"] = "finished";
     s["endedAt"] = utcNow();

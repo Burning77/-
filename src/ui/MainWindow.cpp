@@ -69,7 +69,7 @@ MainWindow::MainWindow(QWidget *parent, QString dataRoot)
     header->addWidget(new QLabel(QStringLiteral("文本服务")));
     provider = new QComboBox;
     provider->setObjectName("providerCombo");
-    provider->addItems({"OpenAI", "DeepSeek"});
+    provider->addItems({"ChatGPT", "OpenAI", "DeepSeek"});
     provider->setCurrentText(AppSettings().textConfig().provider);
     header->addWidget(provider);
     auto settings = new QPushButton(QStringLiteral("设置"));

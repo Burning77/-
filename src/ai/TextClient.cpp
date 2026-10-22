@@ -1,6 +1,8 @@
 #include "TextClient.h"
 #include "SseParser.h"
 #include "app/CredentialStore.h"
+#include "auth/ChatGptAccount.h"
+#include <QPointer>
 #include <QJsonDocument>
 #include <QRegularExpression>
 #include <QTimer>
@@ -36,6 +38,11 @@ QString serviceError(const QString &provider, int status, const QJsonValue &valu
 } // namespace
 TextClient::TextClient(QObject *p) : QObject(p), manager(this) {
     keyReader = CredentialStore::read;
+    connect(&ChatGptAccount::shared(), &ChatGptAccount::invalidated, this, [this](QString client) {
+        for (auto id : profileRequests.keys())
+            if (profileRequests.value(id) == client)
+                cancel(id);
+    });
 }
 QJsonObject TextClient::payload(const TextRequest &r) {
     QJsonObject o{{"model", r.config.model}, {"stream", true}};
@@ -45,15 +52,59 @@ QJsonObject TextClient::payload(const TextRequest &r) {
         if (r.jsonMode)
             o["response_format"] = QJsonObject{{"type", "json_object"}};
     } else {
-        o["input"] = r.messages;
+        if (r.config.provider == "ChatGPT") {
+            QJsonArray input;
+            QStringList instructions;
+            for (auto value : r.messages) {
+                auto message = value.toObject();
+                if (message["role"] == "system")
+                    instructions.append(message["content"].toString());
+                else
+                    input.append(message);
+            }
+            o["input"] = input;
+            o["store"] = false;
+            if (!instructions.isEmpty())
+                o["instructions"] = instructions.join("\n\n");
+        } else
+            o["input"] = r.messages;
         if (r.jsonMode)
             o["text"] = QJsonObject{{"format", QJsonObject{{"type", "json_object"}}}};
     }
     return o;
 }
 QString TextClient::start(const TextRequest &r) {
+    if (r.config.provider == "ChatGPT") {
+        if (QUrl(r.config.baseUrl).adjusted(QUrl::StripTrailingSlash).toString() !=
+            "https://api.openai.com/v1") {
+            QTimer::singleShot(0, this, [this, r] {
+                emit failed(r.id, QStringLiteral("ChatGPT 登录授权仅可发送到官方 API 地址"));
+            });
+            return r.id;
+        }
+        pendingAuth.insert(r.id);
+        profileRequests[r.id] = r.config.accountId;
+        QPointer<TextClient> guard(this);
+        ChatGptAccount::shared().token(r.config.accountId, [this, guard, r](QString token, QString error) {
+            if (!guard || !pendingAuth.remove(r.id))
+                return;
+            if (!error.isEmpty()) {
+                profileRequests.remove(r.id);
+                QTimer::singleShot(0, this, [this, r, error] { emit failed(r.id, error); });
+                return;
+            }
+            begin(r, token);
+        });
+        return r.id;
+    }
+    return begin(r, keyReader(r.config.credentialId()));
+}
+QString TextClient::begin(const TextRequest &r, const QString &key) {
     auto reject = [this, r](QString message) {
-        QTimer::singleShot(0, this, [this, r, message] { emit failed(r.id, message); });
+        QTimer::singleShot(0, this, [this, r, message] {
+            profileRequests.remove(r.id);
+            emit failed(r.id, message);
+        });
         return r.id;
     };
     QUrl url(r.config.baseUrl);
@@ -63,7 +114,6 @@ QString TextClient::start(const TextRequest &r) {
         return reject(QStringLiteral("API 地址须为有效的 HTTPS 地址"));
     if (r.config.model.trimmed().isEmpty())
         return reject(QStringLiteral("请在设置中填写模型名称"));
-    auto key = keyReader(r.config.credentialId());
     if (key.isEmpty())
         return reject(QStringLiteral("请在设置中填写该服务对应的 API Key"));
     auto path = url.path();
@@ -159,6 +209,7 @@ QString TextClient::start(const TextRequest &r) {
     connect(reply, &QNetworkReply::finished, this, [this, reply, r, state, consume, key] {
         consume();
         replies.remove(r.id);
+        profileRequests.remove(r.id);
         int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
         if (status != 200) {
             auto body = QJsonDocument::fromJson(state->errorBody).object();
@@ -182,6 +233,11 @@ QString TextClient::start(const TextRequest &r) {
     return r.id;
 }
 void TextClient::cancel(const QString &id) {
+    if (pendingAuth.remove(id)) {
+        profileRequests.remove(id);
+        emit failed(id, QStringLiteral("用户已取消等待授权"));
+        return;
+    }
     if (replies.contains(id))
         replies[id]->abort();
 }

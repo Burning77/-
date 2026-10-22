@@ -6,6 +6,35 @@
 class TextClientTest : public QObject {
     Q_OBJECT
   private slots:
+    void chatGptPlanPayloadUsesInstructionsAndNoStore() {
+        TextRequest r;
+        r.config.provider = "ChatGPT";
+        r.config.model = "account-model";
+        r.messages = {QJsonObject{{"role", "system"}, {"content", "coach"}},
+                      QJsonObject{{"role", "user"}, {"content", "question"}}};
+        auto p = TextClient::payload(r);
+        QCOMPARE(p["store"].toBool(true), false);
+        QCOMPARE(p["instructions"].toString(), QString("coach"));
+        QCOMPARE(p["input"].toArray().size(), 1);
+        QCOMPARE(p["input"].toArray()[0].toObject()["role"].toString(), QString("user"));
+    }
+    void chatGptNeverSendsCredentialToCustomEndpoint() {
+        TextClient c;
+        int reads = 0;
+        c.keyReader = [&](const QString &) {
+            reads++;
+            return QString("fixture");
+        };
+        QSignalSpy errors(&c, &TextClient::failed);
+        TextRequest r;
+        r.config.provider = "ChatGPT";
+        r.config.model = "fixture";
+        r.config.baseUrl = "https://example.invalid/v1";
+        c.start(r);
+        QTRY_COMPARE_WITH_TIMEOUT(errors.size(), 1, 1000);
+        QVERIFY(errors.first()[1].toString().contains(QStringLiteral("官方")));
+        QCOMPARE(reads, 0);
+    }
     void preservesSafeServiceErrorDetails_data() {
         QTest::addColumn<int>("status");
         QTest::addColumn<QByteArray>("body");
