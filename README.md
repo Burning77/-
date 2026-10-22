@@ -2,6 +2,17 @@
 
 Windows 桌面面试记录工具：双路录音、实时中文转写、问题提取、OpenAI GPT / DeepSeek 流式参考回答、面试复盘和 Markdown 导出。
 
+## 0.3.0：DeepSeek 账号登录、窗口大小及丢弃录音
+
+运行包：`dist/InterviewAssistant-0.3.0-win64.zip`，完整解压后运行同目录的 `InterviewAssistant.exe`。旧版的会话先保存或按已有流程结束，再退出并打开新版。
+
+- 初次显示在主屏幕居中，窗口客户区最大约 1280×780，同时不超过屏幕可用宽高的 85%；小窗口支持滚动，设置页也可滚动。
+- 录音中或暂停时可点 **结束不保存**，确认后停止采集和生成，删除本次会话的录音、对话及 AI 结果；即使正在浏览另一条历史记录，也只丢弃正在录音的会话。
+- **设置 → DeepSeek → 连接方式选“DeepSeek 账号登录” → 使用 DeepSeek 账号登录**。在默认浏览器中的官方平台页面完成授权，回到软件读取可用模型，再点“保存并测试连接”；文本服务选 **DeepSeek**。
+- 保留 **API Key** 方式，可手动切换。账号调用使用 DeepSeek 平台授予的权限和额度，不保证网页聊天的免费用量适用于本软件。退出或授权失效时不会自动改用 API Key。
+
+账号授权采用 PKCE 和本机回调，凭据用 Windows DPAPI 加密保存。取消及退出会阻止迟到的登录响应恢复账户；推理凭据仅发送到 DeepSeek 官方账号推理端点。语音转写仍按语音设置独立运行。协议依据为 DeepSeek 官方 [账号授权实现](https://github.com/deepseek-ai/deepseek-harness/tree/master/packages/credentials/deepseek-account-platform) 和 [账号模型适配](https://github.com/deepseek-ai/deepseek-harness/tree/master/packages/llm/llm-deepseek-account)。真实 DeepSeek 账号授权及回答需用户在浏览器登录后测试，本地测试使用隔离的虚构凭据。
+
 ## 0.2.2：ChatGPT 问题提取请求修复
 
 修复 ChatGPT 套餐提取问题时 HTTP 400：JSON 输出要求现在同时放入 `input` 的 developer 消息，满足 JSON 模式的请求检查；原始对话和来源校验保留。运行包 `dist/InterviewAssistant-0.2.2`。结束并保存旧版会话后退出，打开新版，从历史中选择会话再点“立即提取问题”，无需重新录音。
@@ -69,7 +80,7 @@ pwsh -File scripts/package.ps1 -BuildRoot E:/project/InterviewAssistant-build -P
 
 ## 首次使用
 
-1. 推荐按上面的 0.2.0 步骤登录 ChatGPT 套餐；也可选择 OpenAI 或 DeepSeek，填写 API 地址、模型 ID 和对应 API Key。
+1. 可按上述步骤登录 ChatGPT 套餐或 DeepSeek 账号；也可选择 OpenAI / DeepSeek 的 API Key 方式，填写地址、模型 ID 和对应密钥。
 2. “语音转写”默认本地中文识别。需要云端时切换模式，填写独立语音凭据；DeepSeek 文本 Key 不用于 OpenAI 语音转写。
 3. 测试本地识别仅加载模型；文本或云端转写测试会产生真实网络请求，受所选账户的计费及额度规则约束。
 4. 填写面试名称、岗位和真实项目经历摘要，选择远端播放设备与麦克风。

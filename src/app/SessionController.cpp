@@ -478,6 +478,38 @@ void SessionController::finish() {
     emit status(QStringLiteral("正在等待最终转写，最多 5 秒…"));
     QTimer::singleShot(5000, this, &SessionController::finishNow);
 }
+bool SessionController::discardRecording() {
+    if (!live || stoppingState)
+        return false;
+    const auto sid = liveSid;
+    // Reject late audio/transcription before stopping producers and closing files.
+    live = false;
+    pauseState = false;
+    debounce.stop();
+    deadline.stop();
+    gapFlushTimer.stop();
+    remoteTranscriber.stop();
+    micTranscriber.stop();
+    localRemote.stop();
+    localMic.stop();
+    audio.stop();
+    cancel(sid);
+    gapRows.clear();
+    dirtyGapChannels.clear();
+    liveSid.clear();
+    const bool removed = store.removeSession(sid);
+    if (!removed) {
+        auto session = get("sessions", sid, sid);
+        session["state"] = "discardFailed";
+        session["discardError"] = store.lastError();
+        persist("sessions", session);
+    }
+    emit changed(sid);
+    emit stateChanged();
+    emit status(removed ? QStringLiteral("本次会话已丢弃，未保留录音和记录")
+                        : QStringLiteral("丢弃未完成，部分内容可能仍保留，请检查后重试删除"));
+    return removed;
+}
 void SessionController::finishNow() {
     if (!live || !stoppingState)
         return;

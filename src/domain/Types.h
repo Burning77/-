@@ -14,6 +14,7 @@ inline QString utcNow() {
 struct ProviderConfig {
     QString provider = "OpenAI", baseUrl = "https://api.openai.com/v1", model;
     QString accountId;
+    bool accountLogin = false;
     QString credentialId() const {
         return "InterviewAssistant/" +
                QString::fromLatin1(

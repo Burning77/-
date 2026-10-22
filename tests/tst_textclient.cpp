@@ -7,6 +7,35 @@
 class TextClientTest : public QObject {
     Q_OBJECT
   private slots:
+    void deepSeekAccountUsesMessagesAndNoApiKeyFallback() {
+        TextRequest r;
+        r.config.provider = "DeepSeek";
+        r.config.accountLogin = true;
+        r.messages = {QJsonObject{{"role", "system"}, {"content", "Return JSON."}},
+                      QJsonObject{{"role", "user"}, {"content", "question"}}};
+        auto payload = TextClient::payload(r);
+        QCOMPARE(payload["max_tokens"].toInt(), 4096);
+        QCOMPARE(payload["system"].toString(), QString("Return JSON."));
+        QVERIFY(!payload.contains("response_format"));
+        QCOMPARE(payload["messages"]
+                     .toArray()
+                     .first()
+                     .toObject()["content"]
+                     .toArray()
+                     .first()
+                     .toObject()["type"]
+                     .toString(),
+                 QString("text"));
+        TextClient client;
+        int reads = 0;
+        client.keyReader = [&](QString) {
+            reads++;
+            return QString("fixture-key");
+        };
+        r.config.baseUrl = "https://example.invalid/v1";
+        client.start(r);
+        QCOMPARE(reads, 0);
+    }
     void chatGptExtractionDeclaresJsonInInputMessages() {
         ProviderConfig config;
         config.provider = "ChatGPT";

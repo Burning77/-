@@ -25,6 +25,18 @@ class SettingsTest : public QObject {
         QVERIFY(o.credentialId() != d.credentialId());
         d.baseUrl = "https://different.example";
         QVERIFY(d.credentialId() != a.textConfig().credentialId());
+        a.save(d);
+        d.accountLogin = true;
+        d.baseUrl = "https://api.deepseek.com";
+        a.save(d);
+        QVERIFY(a.config("DeepSeek").accountLogin);
+        QCOMPARE(a.config("DeepSeek").baseUrl, QString("https://api.deepseek.com"));
+        QCOMPARE(QSettings().value("DeepSeek/url").toString(), QString("https://different.example"));
+        d.accountLogin = false;
+        d.baseUrl = "https://different.example";
+        a.save(d);
+        QVERIFY(!a.config("DeepSeek").accountLogin);
+        QCOMPARE(a.config("DeepSeek").baseUrl, QString("https://different.example"));
     }
 };
 QTEST_MAIN(SettingsTest)

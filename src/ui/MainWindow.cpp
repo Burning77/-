@@ -22,6 +22,7 @@
 #include <QScreen>
 #include <QShowEvent>
 #include <QWindow>
+#include <QScrollArea>
 #include <algorithm>
 static QString timestamp(qint64 ms) {
     auto sec = ms / 1000;
@@ -42,8 +43,11 @@ void MainWindow::showEvent(QShowEvent *event) {
         QTimer::singleShot(0, this, [this] {
             if (auto primary = QGuiApplication::primaryScreen()) {
                 if (auto native = windowHandle()) {
+                    const auto available = primary->availableGeometry();
+                    resize(qMin(1280, available.width() * 85 / 100),
+                           qMin(780, available.height() * 85 / 100));
                     auto frame = native->frameGeometry();
-                    frame.moveCenter(primary->availableGeometry().center());
+                    frame.moveCenter(available.center());
                     native->setFramePosition(frame.topLeft());
                 }
             }
@@ -57,13 +61,13 @@ static QString stateName(QString s) {
         {"finished", QStringLiteral("已结束")},  {"interrupted", QStringLiteral("上次运行中断")},
         {"Queued", QStringLiteral("排队中")},    {"Running", QStringLiteral("正在生成")},
         {"Completed", QStringLiteral("已完成")}, {"Failed", QStringLiteral("未完成")},
-        {"Cancelled", QStringLiteral("已停止")}};
+        {"Cancelled", QStringLiteral("已停止")}, {"discardFailed", QStringLiteral("丢弃失败")}};
     return labels.value(s, s);
 }
 MainWindow::MainWindow(QWidget *parent, QString dataRoot)
     : QMainWindow(parent), controller(dataRoot, this), player(this), output(this) {
     setWindowTitle(QStringLiteral("面试助手 · 实时记录与复盘 · ") + QStringLiteral(INTERVIEW_APP_VERSION));
-    resize(1450, 900);
+    resize(1280, 780);
     setStyleSheet(QStringLiteral(
         "QMainWindow{background:#f3f6fb} QWidget{font-family:'Microsoft YaHei "
         "UI';font-size:13px;color:#243047} QGroupBox{background:white;border:1px solid "
@@ -82,7 +86,11 @@ MainWindow::MainWindow(QWidget *parent, QString dataRoot)
     auto layout = new QVBoxLayout(body);
     layout->setContentsMargins(18, 14, 18, 12);
     layout->setSpacing(10);
-    setCentralWidget(body);
+    auto viewport = new QScrollArea;
+    viewport->setFrameShape(QFrame::NoFrame);
+    viewport->setWidgetResizable(true);
+    viewport->setWidget(body);
+    setCentralWidget(viewport);
     auto header = new QHBoxLayout;
     auto caption = new QLabel(QStringLiteral("面试助手"));
     caption->setObjectName("caption");
@@ -132,10 +140,13 @@ MainWindow::MainWindow(QWidget *parent, QString dataRoot)
     startButton->setObjectName("startButton");
     pauseButton = new QPushButton(QStringLiteral("暂停"));
     finishButton = new QPushButton(QStringLiteral("结束并保存"));
+    discardButton = new QPushButton(QStringLiteral("结束不保存"));
+    discardButton->setObjectName("discardButton");
     state = new QLabel(QStringLiteral("未开始"));
     controls->addWidget(startButton);
     controls->addWidget(pauseButton);
     controls->addWidget(finishButton);
+    controls->addWidget(discardButton);
     controls->addWidget(state);
     controls->addStretch();
     auto automatic = new QCheckBox(QStringLiteral("自动提取问题"));
@@ -300,6 +311,7 @@ MainWindow::MainWindow(QWidget *parent, QString dataRoot)
         (ch == "remote" ? remoteLevel : micLevel)->setValue(qBound(0, int(level * 250), 100));
     });
     connect(submit, &QPushButton::clicked, this, &MainWindow::addQuestion);
+    connect(discardButton, &QPushButton::clicked, this, &MainWindow::discardRecording);
     connect(manual, &QLineEdit::returnPressed, this, &MainWindow::addQuestion);
     connect(extract, &QPushButton::clicked, this, [this] { controller.extractNow(viewedSession); });
     connect(regenerate, &QPushButton::clicked, this, [this] {
@@ -373,6 +385,30 @@ void MainWindow::start() {
     controller.startRecording(sid, remoteDevice->currentData().toString(),
                               micDevice->currentData().toByteArray());
     refresh();
+}
+void MainWindow::discardRecording() {
+    if (!controller.recording() || controller.stopping())
+        return;
+    const auto sid = controller.liveSessionId();
+    QString name;
+    for (auto session : controller.store.list("sessions"))
+        if (session["id"] == sid)
+            name = session["title"].toString();
+    if (QMessageBox::question(
+            this, QStringLiteral("结束不保存"),
+            QStringLiteral("丢弃正在录音的会话“%1”？本次录音、对话和 AI 结果将被删除。").arg(name),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
+        return;
+    if (controller.liveSessionId() != sid || !controller.recording() || controller.stopping())
+        return;
+    player.stop();
+    const bool removed = controller.discardRecording();
+    if (removed && viewedSession == sid)
+        viewedSession.clear();
+    refreshHistory();
+    refresh();
+    if (!removed)
+        QMessageBox::warning(this, QStringLiteral("丢弃失败"), controller.store.lastError());
 }
 void MainWindow::addQuestion() {
     auto text = manual->text().trimmed();
@@ -521,6 +557,7 @@ void MainWindow::updateState() {
     startButton->setEnabled(!live);
     pauseButton->setEnabled(live && !controller.stopping());
     finishButton->setEnabled(live && !controller.stopping());
+    discardButton->setEnabled(live && !controller.stopping());
     pauseButton->setText(controller.paused() ? QStringLiteral("继续录音") : QStringLiteral("暂停"));
     state->setText(controller.stopping() ? QStringLiteral("正在保存最终转写…")
                    : live ? (controller.paused() ? QStringLiteral("已暂停") : QStringLiteral("● 正在录音"))

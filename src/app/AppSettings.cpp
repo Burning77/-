@@ -1,4 +1,5 @@
 #include "AppSettings.h"
+#include "auth/DeepSeekAccount.h"
 #include <QCoreApplication>
 QString AppSettings::transcriptionMode() const {
     return QSettings().value("transcription/mode", "Local").toString();
@@ -25,6 +26,13 @@ ProviderConfig AppSettings::config(const QString &provider) const {
         c.baseUrl = "https://api.openai.com/v1";
         c.accountId = s.value("chatgpt/active").toString();
     }
+    if (provider == "DeepSeek") {
+        c.accountLogin = s.value("DeepSeek/accountLogin", false).toBool();
+        if (c.accountLogin) {
+            c.baseUrl = "https://api.deepseek.com";
+            c.accountId = DeepSeekAccount::shared().sessionId();
+        }
+    }
     return c;
 }
 ProviderConfig AppSettings::textConfig() const {
@@ -33,7 +41,10 @@ ProviderConfig AppSettings::textConfig() const {
 }
 void AppSettings::save(const ProviderConfig &c) {
     QSettings s;
-    s.setValue(c.provider + "/url", c.baseUrl.trimmed());
+    if (c.provider != "DeepSeek" || !c.accountLogin)
+        s.setValue(c.provider + "/url", c.baseUrl.trimmed());
+    if (c.provider == "DeepSeek")
+        s.setValue("DeepSeek/accountLogin", c.accountLogin);
     s.setValue(c.provider + "/model", c.model.trimmed());
 }
 void AppSettings::select(const QString &p) {

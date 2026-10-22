@@ -3,8 +3,10 @@
 #include "transcription/RealtimeTranscriber.h"
 #include "transcription/LocalTranscriber.h"
 #include "auth/ChatGptAccount.h"
+#include "auth/DeepSeekAccount.h"
 #include <QDesktopServices>
 #include <QPointer>
+#include <QScrollArea>
 #include <QSettings>
 #include <QDialogButtonBox>
 #include <QFormLayout>
@@ -25,6 +27,13 @@ SettingsDialog::SettingsDialog(QWidget *p) : QDialog(p), client(this) {
     layout->addLayout(row);
     auto tabs = new QTabWidget;
     layout->addWidget(tabs);
+    auto addTab = [tabs](QWidget *page, QString title) {
+        auto scroll = new QScrollArea;
+        scroll->setWidgetResizable(true);
+        scroll->setFrameShape(QFrame::NoFrame);
+        scroll->setWidget(page);
+        tabs->addTab(scroll, title);
+    };
     auto planPage = new QWidget;
     auto planForm = new QFormLayout(planPage);
     accounts = new QComboBox;
@@ -55,7 +64,7 @@ SettingsDialog::SettingsDialog(QWidget *p) : QDialog(p), client(this) {
                                   "套餐，仍受账户及本工具的用量限制。语音转写请选择本地识别或独立服务。"));
     planHelp->setWordWrap(true);
     planForm->addRow(planHelp);
-    tabs->addTab(planPage, QStringLiteral("ChatGPT 套餐"));
+    addTab(planPage, QStringLiteral("ChatGPT 套餐"));
     connect(login, &QPushButton::clicked, this,
             [this] { ChatGptAccount::shared().login(accounts->currentData().toString()); });
     connect(addAccount, &QPushButton::clicked, this, [] { ChatGptAccount::shared().login(); });
@@ -109,6 +118,8 @@ SettingsDialog::SettingsDialog(QWidget *p) : QDialog(p), client(this) {
         auto page = new QWidget;
         auto form = new QFormLayout(page);
         Fields f{name, new QLineEdit(config.baseUrl), new QLineEdit(config.model), new QLineEdit, new QLabel};
+        if (name == "DeepSeek")
+            f.url->setText(QSettings().value("DeepSeek/url", "https://api.deepseek.com").toString());
         f.key->setEchoMode(QLineEdit::Password);
         f.key->setPlaceholderText(CredentialStore::read(config.credentialId()).isEmpty()
                                       ? QStringLiteral("填写该服务的 API Key")
@@ -116,6 +127,57 @@ SettingsDialog::SettingsDialog(QWidget *p) : QDialog(p), client(this) {
         f.model->setPlaceholderText(QStringLiteral("填写账户可用的 API 模型 ID"));
         f.result->setWordWrap(true);
         f.result->setTextFormat(Qt::PlainText);
+        if (name == "DeepSeek") {
+            deepSeekMode = new QComboBox;
+            deepSeekMode->setObjectName("deepSeekMode");
+            deepSeekMode->addItem(QStringLiteral("DeepSeek 账号登录"), true);
+            deepSeekMode->addItem(QStringLiteral("API Key"), false);
+            deepSeekMode->setCurrentIndex(config.accountLogin ? 0 : 1);
+            auto login = new QPushButton(QStringLiteral("使用 DeepSeek 账号登录"));
+            login->setObjectName("deepSeekLoginButton");
+            auto logout = new QPushButton(QStringLiteral("退出 DeepSeek 账号"));
+            auto cancel = new QPushButton(QStringLiteral("取消等待登录"));
+            auto refresh = new QPushButton(QStringLiteral("读取账号可用模型"));
+            deepSeekStatus =
+                new QLabel(DeepSeekAccount::shared().signedIn() ? QStringLiteral("DeepSeek 账号已登录")
+                                                                : QStringLiteral("尚未登录 DeepSeek 账号"));
+            deepSeekStatus->setWordWrap(true);
+            deepSeekStatus->setTextFormat(Qt::PlainText);
+            form->addRow(QStringLiteral("连接方式"), deepSeekMode);
+            form->addRow(login);
+            form->addRow(logout);
+            form->addRow(cancel);
+            form->addRow(refresh);
+            form->addRow(deepSeekStatus);
+            auto update = [this, f] {
+                bool account = deepSeekMode->currentData().toBool();
+                f.url->setEnabled(!account);
+                f.key->setEnabled(!account);
+            };
+            connect(deepSeekMode, &QComboBox::currentIndexChanged, this, update);
+            update();
+            connect(login, &QPushButton::clicked, this, [this] {
+                deepSeekMode->setCurrentIndex(0);
+                DeepSeekAccount::shared().login();
+            });
+            connect(logout, &QPushButton::clicked, this, [] { DeepSeekAccount::shared().signOut(); });
+            connect(cancel, &QPushButton::clicked, this, [this] {
+                DeepSeekAccount::shared().cancelLogin();
+                deepSeekStatus->setText(QStringLiteral("已取消等待登录"));
+            });
+            connect(refresh, &QPushButton::clicked, this, &SettingsDialog::loadDeepSeekModels);
+            connect(&DeepSeekAccount::shared(), &DeepSeekAccount::status, deepSeekStatus, &QLabel::setText);
+            connect(&DeepSeekAccount::shared(), &DeepSeekAccount::changed, this, [this] {
+                if (DeepSeekAccount::shared().signedIn()) {
+                    deepSeekMode->setCurrentIndex(0);
+                    selected->setCurrentText("DeepSeek");
+                    AppSettings().select("DeepSeek");
+                    loadDeepSeekModels();
+                } else
+                    deepSeekStatus->setText(
+                        QStringLiteral("DeepSeek 账号未登录，请重新登录或手动切换 API Key"));
+            });
+        }
         if (name == "Transcription") {
             speechMode = new QComboBox;
             speechMode->setObjectName("transcriptionMode");
@@ -159,7 +221,10 @@ SettingsDialog::SettingsDialog(QWidget *p) : QDialog(p), client(this) {
         form->addRow(clearButton);
         form->addRow(f.result);
         auto help = new QLabel(
-            name == "Transcription"
+            name == "DeepSeek" ? QStringLiteral("账号登录会在默认浏览器打开 DeepSeek "
+                                                "官方平台授权页。调用权限和额度以该账号为准；登录不代表免费聊"
+                                                "天额度可用于本软件。API Key 模式可独立使用。")
+            : name == "Transcription"
                 ? QStringLiteral("本地模式的音频留在本机，无需 Key。云端模式使用独立 API 凭据和额度，默认 "
                                  "gpt-live-transcribe；音频会发送给云端服务。设置在下一场录音开始时生效。")
                 : QStringLiteral("参考回答、问题提取和复盘使用当前选定的文本服务。切换只影响后续请求。密钥保"
@@ -167,7 +232,7 @@ SettingsDialog::SettingsDialog(QWidget *p) : QDialog(p), client(this) {
         help->setWordWrap(true);
         form->addRow(help);
         fields.append(f);
-        tabs->addTab(page, name == "Transcription" ? QStringLiteral("语音转写") : name);
+        addTab(page, name == "Transcription" ? QStringLiteral("语音转写") : name);
     }
     auto buttons = new QDialogButtonBox(QDialogButtonBox::Save | QDialogButtonBox::Cancel);
     layout->addWidget(buttons);
@@ -178,6 +243,54 @@ SettingsDialog::SettingsDialog(QWidget *p) : QDialog(p), client(this) {
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
     if (!ChatGptAccount::shared().activeProfile().isEmpty())
         loadPlanModels();
+    if (deepSeekMode->currentData().toBool() && DeepSeekAccount::shared().signedIn())
+        loadDeepSeekModels();
+}
+void SettingsDialog::loadDeepSeekModels() {
+    auto session = DeepSeekAccount::shared().sessionId();
+    if (session.isEmpty()) {
+        deepSeekStatus->setText(QStringLiteral("请先登录 DeepSeek 账号"));
+        return;
+    }
+    deepSeekStatus->setText(QStringLiteral("正在读取账号可用模型…"));
+    QPointer<SettingsDialog> guard(this);
+    DeepSeekAccount::shared().models([guard, session](QJsonObject result, QString error) {
+        if (!guard || session != DeepSeekAccount::shared().sessionId())
+            return;
+        if (!error.isEmpty()) {
+            guard->deepSeekStatus->setText(error);
+            return;
+        }
+        QStringList ids;
+        for (auto value : result["data"].toArray()) {
+            auto model = value.toObject();
+            auto id = model["id"].toString();
+            auto input = model.value("input_modalities").toArray(QJsonArray{"text"});
+            auto output = model.value("output_modalities").toArray(QJsonArray{"text"});
+            if (!id.trimmed().isEmpty() && input.contains("text") && output.contains("text") &&
+                model["api_capabilities"].toObject()["anthropic_messages"].isObject() && !ids.contains(id))
+                ids.append(id);
+        }
+        if (ids.isEmpty()) {
+            guard->deepSeekStatus->setText(
+                QStringLiteral("账号未返回支持文本对话的可用模型，请检查平台授权"));
+            return;
+        }
+        if (!guard->deepSeekMode->currentData().toBool())
+            return;
+        for (auto f : guard->fields)
+            if (f.provider == "DeepSeek") {
+                auto model = f.model->text().trimmed();
+                if (!ids.contains(model))
+                    model = ids.contains("deepseek-flash") ? "deepseek-flash" : ids.first();
+                f.model->setText(model);
+                auto config = AppSettings().config("DeepSeek");
+                config.accountLogin = true;
+                config.model = model;
+                AppSettings().save(config);
+            }
+        guard->deepSeekStatus->setText(QStringLiteral("DeepSeek 账号已连接；可用模型：") + ids.join("、"));
+    });
 }
 void SettingsDialog::reloadAccounts() {
     QSignalBlocker block(accounts);
@@ -245,6 +358,11 @@ bool SettingsDialog::save() {
         c.provider = f.provider;
         c.baseUrl = f.url->text().trimmed();
         c.model = f.model->text().trimmed();
+        c.accountLogin = f.provider == "DeepSeek" && deepSeekMode->currentData().toBool();
+        if (c.accountLogin) {
+            AppSettings().save(c);
+            continue;
+        }
         QUrl u(c.baseUrl);
         if (!u.isValid() || u.host().isEmpty() || !u.userInfo().isEmpty() ||
             u.scheme() != (f.provider == "Transcription" ? "wss" : "https")) {

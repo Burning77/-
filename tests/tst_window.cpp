@@ -5,8 +5,10 @@
 #include <QFontDatabase>
 #include <QInputDialog>
 #include <QTimer>
+#include <QTabWidget>
 #include <QScreen>
 #include <QWindow>
+#include <QMessageBox>
 #include <QtTest>
 static QPushButton *button(QWidget &w, const QString &text) {
     for (auto b : w.findChildren<QPushButton *>())
@@ -38,6 +40,16 @@ static void selectSession(QWidget &w, const QString &sid) {
 }
 #include <QListWidget>
 #include <QPushButton>
+class WindowIdleSource : public AudioSource {
+    void run() override {
+        QAudioFormat format;
+        format.setSampleRate(24000);
+        format.setChannelCount(1);
+        format.setSampleFormat(QAudioFormat::Int16);
+        emit formatReady(format);
+        exec();
+    }
+};
 class WindowTest : public QObject {
     Q_OBJECT
   private slots:
@@ -52,12 +64,49 @@ class WindowTest : public QObject {
         QTest::qWait(60);
         QTRY_COMPARE(w.windowHandle()->screen(), primary);
         QTRY_VERIFY((w.frameGeometry().center() - available.center()).manhattanLength() <= 2);
+        QVERIFY2(available.contains(w.frameGeometry()),
+                 "Initial frame must fit inside the primary work area");
         w.move(available.topLeft() + QPoint(31, 37));
         const auto moved = w.pos();
         w.hide();
         w.show();
         QTest::qWait(30);
         QCOMPARE(w.pos(), moved);
+    }
+    void discardConfirmationTargetsLiveSessionAndKeepsOtherHistory() {
+        QTemporaryDir dir(QDir::currentPath() + "/discard-window-XXXXXX");
+        MainWindow w(nullptr, dir.path());
+        auto c = w.findChild<SessionController *>();
+        c->autoExtract = false;
+        c->audio.renderFactory = [](const QString &) -> AudioSource * { return new WindowIdleSource; };
+        c->audio.microphoneFactory = [](const QByteArray &) -> AudioSource * { return new WindowIdleSource; };
+        auto saved = c->createSession("saved-history", "", "");
+        auto current = c->createSession("current-recording", "", "");
+        c->startRecording(current, "fixture", {});
+        selectSession(w, saved);
+        auto discard = w.findChild<QPushButton *>("discardButton");
+        QVERIFY(discard);
+        QVERIFY(discard->isEnabled());
+        auto respond = [&](QMessageBox::StandardButton response) {
+            QTimer::singleShot(0, &w, [response] {
+                auto box = qobject_cast<QMessageBox *>(QApplication::activeModalWidget());
+                QVERIFY(box);
+                QVERIFY(box->text().contains("current-recording"));
+                box->button(response)->click();
+            });
+            QTest::mouseClick(discard, Qt::LeftButton);
+        };
+        respond(QMessageBox::No);
+        QVERIFY(c->recording());
+        QCOMPARE(c->store.list("sessions").size(), 2);
+        respond(QMessageBox::Yes);
+        QVERIFY(!c->recording());
+        QCOMPARE(c->store.list("sessions").size(), 1);
+        QCOMPARE(c->store.list("sessions").first()["id"].toString(), saved);
+        QVERIFY(!discard->isEnabled());
+        c->changed(current);
+        QTest::qWait(150);
+        QCOMPARE(c->store.list("sessions").first()["id"].toString(), saved);
     }
     void offersChatGptLoginAndLocalSpeech() {
         QFontDatabase::addApplicationFont(QStringLiteral("C:/Windows/Fonts/msyh.ttc"));
@@ -68,10 +117,20 @@ class WindowTest : public QObject {
         QVERIFY(provider->findText("ChatGPT") >= 0);
         SettingsDialog settings;
         QVERIFY(settings.findChild<QPushButton *>("chatgptLoginButton"));
+        QVERIFY(settings.findChild<QPushButton *>("deepSeekLoginButton"));
         QVERIFY(settings.findChild<QComboBox *>("transcriptionMode"));
         settings.show();
         QTest::qWait(60);
         QVERIFY(settings.grab().save(QDir::currentPath() + "/settings-preview.png"));
+        auto tabs = settings.findChild<QTabWidget *>();
+        QVERIFY(tabs);
+        tabs->setCurrentIndex(2);
+        auto mode = settings.findChild<QComboBox *>("deepSeekMode");
+        QVERIFY(mode);
+        mode->setCurrentIndex(0);
+        QTest::qWait(30);
+        QVERIFY(settings.size().height() <= QGuiApplication::primaryScreen()->availableGeometry().height());
+        QVERIFY(settings.grab().save(QDir::currentPath() + "/deepseek-settings-preview.png"));
     }
     void batchesRepeatedRefreshNotifications() {
         QTemporaryDir dir(QDir::currentPath() + "/window-XXXXXX");

@@ -2,6 +2,7 @@
 #include "SseParser.h"
 #include "app/CredentialStore.h"
 #include "auth/ChatGptAccount.h"
+#include "auth/DeepSeekAccount.h"
 #include <QPointer>
 #include <QJsonDocument>
 #include <QRegularExpression>
@@ -36,8 +37,17 @@ QString serviceError(const QString &provider, int status, const QJsonValue &valu
     return prefix + safeDiagnostic(details.join(" | "), key);
 }
 } // namespace
-TextClient::TextClient(QObject *p) : QObject(p), manager(this) {
+TextClient::TextClient(QObject *p, DeepSeekAccount *deepSeek)
+    : QObject(p), account(deepSeek ? deepSeek : &DeepSeekAccount::shared()), manager(this) {
     keyReader = CredentialStore::read;
+    postRequest = [this](const QNetworkRequest &request, const QByteArray &body) {
+        return manager.post(request, body);
+    };
+    connect(account, &DeepSeekAccount::invalidated, this, [this](QString session) {
+        for (auto id : profileRequests.keys())
+            if (profileRequests.value(id) == "deepseek:" + session)
+                cancel(id);
+    });
     connect(&ChatGptAccount::shared(), &ChatGptAccount::invalidated, this, [this](QString client) {
         for (auto id : profileRequests.keys())
             if (profileRequests.value(id) == client)
@@ -47,9 +57,29 @@ TextClient::TextClient(QObject *p) : QObject(p), manager(this) {
 QJsonObject TextClient::payload(const TextRequest &r) {
     QJsonObject o{{"model", r.config.model}, {"stream", true}};
     if (r.config.provider == "DeepSeek") {
-        o["messages"] = r.messages;
+        if (r.config.accountLogin) {
+            QJsonArray messages;
+            QStringList system;
+            for (auto value : r.messages) {
+                auto message = value.toObject();
+                if (message["role"] == "system" || message["role"] == "developer")
+                    system.append(message["content"].toString());
+                else
+                    messages.append(QJsonObject{
+                        {"role", message["role"]},
+                        {"content",
+                         QJsonArray{QJsonObject{{"type", "text"}, {"text", message["content"]}}}}});
+            }
+            if (r.jsonMode)
+                system.append("Return a JSON object only, following the requested schema.");
+            o["messages"] = messages;
+            o["max_tokens"] = 4096;
+            if (!system.isEmpty())
+                o["system"] = system.join("\n\n");
+        } else
+            o["messages"] = r.messages;
         o["thinking"] = QJsonObject{{"type", "disabled"}};
-        if (r.jsonMode)
+        if (r.jsonMode && !r.config.accountLogin)
             o["response_format"] = QJsonObject{{"type", "json_object"}};
     } else {
         if (r.config.provider == "ChatGPT") {
@@ -78,6 +108,37 @@ QJsonObject TextClient::payload(const TextRequest &r) {
     return o;
 }
 QString TextClient::start(const TextRequest &r) {
+    if (r.config.provider == "DeepSeek" && r.config.accountLogin) {
+        auto url = QUrl(r.config.baseUrl);
+        if (url.adjusted(QUrl::StripTrailingSlash).toString() != "https://api.deepseek.com" &&
+            url.adjusted(QUrl::StripTrailingSlash).toString() != "https://api.deepseek.com/v1") {
+            QTimer::singleShot(0, this, [this, r] {
+                emit failed(r.id, QStringLiteral("DeepSeek 账号授权仅可发送到官方 API 地址"));
+            });
+            return r.id;
+        }
+        pendingAuth.insert(r.id);
+        profileRequests[r.id] = "deepseek:" + r.config.accountId;
+        QPointer<TextClient> guard(this);
+        if (!account) {
+            pendingAuth.remove(r.id);
+            profileRequests.remove(r.id);
+            QTimer::singleShot(0, this,
+                               [this, r] { emit failed(r.id, QStringLiteral("DeepSeek 账号服务已关闭")); });
+            return r.id;
+        }
+        account->token(r.config.accountId, [this, guard, r](QString token, QString error) {
+            if (!guard || !pendingAuth.remove(r.id))
+                return;
+            if (!error.isEmpty()) {
+                profileRequests.remove(r.id);
+                QTimer::singleShot(0, this, [this, r, error] { emit failed(r.id, error); });
+                return;
+            }
+            begin(r, token);
+        });
+        return r.id;
+    }
     if (r.config.provider == "ChatGPT") {
         if (QUrl(r.config.baseUrl).adjusted(QUrl::StripTrailingSlash).toString() !=
             "https://api.openai.com/v1") {
@@ -123,21 +184,29 @@ QString TextClient::begin(const TextRequest &r, const QString &key) {
     auto path = url.path();
     while (path.endsWith('/'))
         path.chop(1);
-    url.setPath(path + (r.config.provider == "DeepSeek" ? "/chat/completions" : "/responses"));
+    bool deepSeekAccount = r.config.provider == "DeepSeek" && r.config.accountLogin;
+    url.setPath(deepSeekAccount
+                    ? "/anthropic/v1/messages"
+                    : path + (r.config.provider == "DeepSeek" ? "/chat/completions" : "/responses"));
     url.setQuery(QString());
     url.setFragment(QString());
     QNetworkRequest req(url);
     req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
     req.setRawHeader("Accept", "text/event-stream");
-    req.setRawHeader("Authorization", "Bearer " + key.toUtf8());
+    if (deepSeekAccount) {
+        req.setRawHeader("x-dsh-auth-token", key.toUtf8());
+        req.setRawHeader("anthropic-version", "2023-06-01");
+        req.setRawHeader("User-Agent", "QtInterviewAssistant/" INTERVIEW_APP_VERSION);
+    } else
+        req.setRawHeader("Authorization", "Bearer " + key.toUtf8());
     req.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::ManualRedirectPolicy);
     req.setTransferTimeout(60000);
-    auto reply = manager.post(req, QJsonDocument(payload(r)).toJson(QJsonDocument::Compact));
+    auto reply = postRequest(req, QJsonDocument(payload(r)).toJson(QJsonDocument::Compact));
     replies.insert(r.id, reply);
     struct State {
         SseParser parser;
         bool terminal = false, ok = false;
-        QString error;
+        QString error, stopReason;
         QByteArray errorBody;
         qint64 bytes = 0;
     };
@@ -157,7 +226,7 @@ QString TextClient::begin(const TextRequest &r, const QString &key) {
         for (const auto &e : state->parser.feed(bytes)) {
             if (state->terminal)
                 continue;
-            if (e.data == "[DONE]" && r.config.provider == "DeepSeek") {
+            if (e.data == "[DONE]" && r.config.provider == "DeepSeek" && !r.config.accountLogin) {
                 state->terminal = true;
                 state->ok = state->error.isEmpty();
                 continue;
@@ -178,7 +247,20 @@ QString TextClient::begin(const TextRequest &r, const QString &key) {
                 state->terminal = true;
                 continue;
             }
-            if (r.config.provider == "DeepSeek") {
+            if (r.config.provider == "DeepSeek" && r.config.accountLogin) {
+                auto delta = o["delta"].toObject();
+                if (type == "content_block_delta" && delta["type"] == "text_delta")
+                    emit textDelta(r.id, delta["text"].toString());
+                if (type == "message_delta" && delta["stop_reason"].isString())
+                    state->stopReason = delta["stop_reason"].toString();
+                if (type == "message_stop") {
+                    state->terminal = true;
+                    state->ok = state->error.isEmpty() &&
+                                (state->stopReason == "end_turn" || state->stopReason == "stop_sequence");
+                    if (!state->ok && state->error.isEmpty())
+                        state->error = QStringLiteral("DeepSeek 输出未完整结束：") + state->stopReason;
+                }
+            } else if (r.config.provider == "DeepSeek") {
                 auto choices = o["choices"].toArray();
                 if (choices.isEmpty())
                     continue;
@@ -232,6 +314,8 @@ QString TextClient::begin(const TextRequest &r, const QString &key) {
                         state->error.isEmpty() ? QStringLiteral("响应中断，已保留接收内容") : state->error);
         else
             emit finished(r.id);
+        if (status == 401 && r.config.provider == "DeepSeek" && r.config.accountLogin && account)
+            account->rejectToken(r.config.accountId);
         reply->deleteLater();
     });
     return r.id;

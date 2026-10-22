@@ -17,6 +17,53 @@ class SessionTest : public QObject {
     Q_OBJECT
     QTemporaryDir settings;
   private slots:
+    void discardsOnlyLiveSession_data() {
+        QTest::addColumn<bool>("paused");
+        QTest::newRow("recording") << false;
+        QTest::newRow("paused") << true;
+    }
+    void discardsOnlyLiveSession() {
+        QFETCH(bool, paused);
+        QTemporaryDir data(QDir::currentPath() + "/discard-XXXXXX");
+        SessionController c(data.path());
+        c.autoExtract = false;
+        c.autoAnswer = false;
+        c.client.keyReader = [](const QString &) { return QString(); };
+        c.audio.renderFactory = [](const QString &) -> AudioSource * { return new IdleSource; };
+        c.audio.microphoneFactory = [](const QByteArray &) -> AudioSource * { return new IdleSource; };
+        auto saved = c.createSession("saved", "", "");
+        auto sid = c.createSession("discard", "", "");
+        c.startRecording(sid, "fixture", {});
+        QTRY_COMPARE(c.store.list("audio", sid).size(), 2);
+        auto transcriber = c.findChildren<RealtimeTranscriber *>().first();
+        const QJsonObject speech{{"id", "speech"},     {"sessionId", sid}, {"channel", "remote"},
+                                 {"text", "question"}, {"final", true},    {"revision", 1}};
+        transcriber->segmentChanged(speech);
+        transcriber->gap("remote", 0, 100);
+        if (paused)
+            c.togglePause();
+        auto q = c.addQuestion(sid, "question", false);
+        auto request = c.answerQuestion(sid, q, ProviderConfig());
+        c.client.textDelta(request, "partial answer");
+        QVERIFY(QFileInfo::exists(data.path() + "/sessions/" + sid));
+        bool removed = false;
+        QVERIFY(QMetaObject::invokeMethod(&c, "discardRecording", Qt::DirectConnection,
+                                          Q_RETURN_ARG(bool, removed)));
+        QVERIFY(removed);
+        QVERIFY(!c.recording());
+        QVERIFY(!c.audio.running());
+        QVERIFY(c.liveSessionId().isEmpty());
+        QVERIFY(!QFileInfo::exists(data.path() + "/sessions/" + sid));
+        c.client.textDelta(request, "late answer");
+        c.client.finished(request);
+        transcriber->segmentChanged(speech);
+        transcriber->gap("remote", 100, 200);
+        QTest::qWait(650);
+        for (auto kind : {"transcripts", "questions", "generations", "reviews", "audio", "gaps"})
+            QVERIFY(c.store.list(kind, sid).isEmpty());
+        QCOMPARE(c.store.list("sessions").size(), 1);
+        QCOMPARE(c.store.list("sessions").first()["id"].toString(), saved);
+    }
     void failedLocalRecognizerPersistsIncompleteSession() {
         QTemporaryDir data;
         SessionController c(data.path());

@@ -22,6 +22,9 @@ class SettingsDialog : public QDialog {
     QComboBox *accounts = nullptr, *planModels = nullptr, *speechMode = nullptr;
     QLineEdit *localModel = nullptr;
     QLabel *planStatus = nullptr;
+    QComboBox *deepSeekMode = nullptr;
+    QLabel *deepSeekStatus = nullptr;
+    void loadDeepSeekModels();
     void reloadAccounts();
     void loadPlanModels();
     bool save();

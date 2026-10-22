@@ -1,0 +1,364 @@
+#include "auth/DeepSeekAccount.h"
+#include "auth/SecretStore.h"
+#include "ai/TextClient.h"
+#include <QFile>
+#include <QSignalSpy>
+#include <cstring>
+#include <QSettings>
+#include <QTemporaryDir>
+#include <QTcpSocket>
+#include <QUrlQuery>
+#include <QtTest>
+class FixtureReply : public QNetworkReply {
+    QByteArray body;
+    qint64 offset = 0;
+    bool ended = false;
+
+  public:
+    FixtureReply(QNetworkRequest request, QByteArray bytes, int status, QObject *parent)
+        : QNetworkReply(parent), body(bytes) {
+        setRequest(request);
+        setUrl(request.url());
+        setAttribute(QNetworkRequest::HttpStatusCodeAttribute, status);
+        open(QIODevice::ReadOnly | QIODevice::Unbuffered);
+        if (status != 200)
+            setError(QNetworkReply::ContentAccessDenied, "Fixture error");
+        QTimer::singleShot(0, this, [this] {
+            if (ended)
+                return;
+            emit readyRead();
+            ended = true;
+            setFinished(true);
+            emit finished();
+        });
+    }
+    qint64 bytesAvailable() const override {
+        return body.size() - offset + QNetworkReply::bytesAvailable();
+    }
+    void abort() override {
+        if (ended)
+            return;
+        ended = true;
+        setError(OperationCanceledError, "Cancelled");
+        setFinished(true);
+        emit finished();
+    }
+    qint64 readData(char *data, qint64 max) override {
+        auto count = qMin(max, qint64(body.size()) - offset);
+        if (!count)
+            return -1;
+        std::memcpy(data, body.constData() + offset, count);
+        offset += count;
+        return count;
+    }
+};
+class DeepSeekTest : public QObject {
+    Q_OBJECT
+    QTemporaryDir settings;
+    static QJsonObject envelope(QJsonObject value) {
+        return {{"code", 0}, {"data", QJsonObject{{"biz_code", 0}, {"biz_data", value}}}};
+    }
+    void signIn(DeepSeekAccount &account) {
+        auto init = std::make_shared<QJsonObject>();
+        account.openBrowser = [](QUrl) { return true; };
+        account.transport = [init](QString, QUrl url, QJsonObject body, QString,
+                                   DeepSeekAccount::JsonCallback done) {
+            if (url.path().endsWith("auth_init")) {
+                *init = body;
+                done(envelope({{"authorize_id", "fixture"},
+                               {"authorize_url", "https://platform.deepseek.com/dsh/authorize"},
+                               {"expires_in", 120}}),
+                     {});
+            } else if (url.path().endsWith("auth_exchange"))
+                done(envelope({{"token", "fixture-token"},
+                               {"authorized_url", "https://platform.deepseek.com/dsh/authorized"}}),
+                     {});
+            else
+                done(envelope({}), {});
+        };
+        account.login();
+        auto callback = QUrl((*init)["redirect_uri"].toString());
+        QTcpSocket socket;
+        socket.connectToHost(QHostAddress::LocalHost, callback.port());
+        QTRY_COMPARE(socket.state(), QTcpSocket::ConnectedState);
+        socket.write("GET /oauth/callback?code=fixture&state=" + (*init)["state"].toString().toUtf8() +
+                     " HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
+        socket.flush();
+        QTRY_VERIFY(account.signedIn());
+    }
+  private slots:
+    void initTestCase() {
+        QCoreApplication::setOrganizationName("InterviewAssistantTests");
+        QCoreApplication::setApplicationName("DeepSeekRegression");
+        QSettings::setDefaultFormat(QSettings::IniFormat);
+        QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, settings.path());
+    }
+    void init() {
+        QSettings().clear();
+    }
+    void signsInThroughPkceAndClearsWithoutRestoringLateResponses() {
+        QTemporaryDir dir;
+        DeepSeekAccount account(nullptr, dir.path());
+        QUrl browser;
+        QJsonObject init;
+        DeepSeekAccount::JsonCallback exchange;
+        int exchanges = 0, revokes = 0;
+        account.openBrowser = [&](QUrl url) {
+            browser = url;
+            return true;
+        };
+        account.transport = [&](QString, QUrl url, QJsonObject body, QString token,
+                                DeepSeekAccount::JsonCallback done) {
+            if (url.path().endsWith("auth_init")) {
+                init = body;
+                done({{"code", 0},
+                      {"data",
+                       QJsonObject{
+                           {"biz_code", 0},
+                           {"biz_data", QJsonObject{{"authorize_id", "fixture"},
+                                                    {"authorize_url",
+                                                     "https://platform.deepseek.com/dsh/authorize?fixture=1"},
+                                                    {"expires_in", 120}}}}}},
+                     {});
+            } else if (url.path().endsWith("auth_exchange")) {
+                exchanges++;
+                exchange = done;
+                QCOMPARE(body["redirect_uri"], init["redirect_uri"]);
+                QVERIFY(!body["code_verifier"].toString().isEmpty());
+            } else if (url.path().endsWith("logout")) {
+                revokes++;
+                QCOMPARE(token, QString("fixture-token"));
+                done({{"code", 0}, {"data", QJsonObject{{"biz_code", 0}, {"biz_data", QJsonObject{}}}}}, {});
+            } else
+                done({}, {});
+        };
+        account.login();
+        QVERIFY(!browser.isEmpty());
+        QCOMPARE(init["code_challenge_method"].toString(), QString("S256"));
+        auto callback = QUrl(init["redirect_uri"].toString());
+        QCOMPARE(callback.path(), QString("/oauth/callback"));
+        QTcpSocket socket;
+        socket.connectToHost(QHostAddress::LocalHost, callback.port());
+        QTRY_COMPARE(socket.state(), QTcpSocket::ConnectedState);
+        socket.write("GET /oauth/callback?code=fixture-code&state=" + init["state"].toString().toUtf8() +
+                     " HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
+        socket.flush();
+        QTRY_COMPARE(exchanges, 1);
+        exchange({{"code", 0},
+                  {"data",
+                   QJsonObject{{"biz_code", 0},
+                               {"biz_data", QJsonObject{{"token", "fixture-token"},
+                                                        {"authorized_url",
+                                                         "https://platform.deepseek.com/dsh/authorized"}}}}}},
+                 {});
+        QVERIFY(account.signedIn());
+        auto session = account.sessionId();
+        QVERIFY(!session.isEmpty());
+        QString resolved;
+        account.token(session, [&](QString token, QString error) {
+            QVERIFY(error.isEmpty());
+            resolved = token;
+        });
+        QCOMPARE(resolved, QString("fixture-token"));
+        account.signOut();
+        QVERIFY(!account.signedIn());
+        QCOMPARE(revokes, 1);
+        exchange({{"code", 0},
+                  {"data",
+                   QJsonObject{{"biz_code", 0},
+                               {"biz_data", QJsonObject{{"token", "fixture-token"},
+                                                        {"authorized_url",
+                                                         "https://platform.deepseek.com/dsh/authorized"}}}}}},
+                 {});
+        QVERIFY(!account.signedIn());
+    }
+    void encryptedGrantCatalogueFailureAndStaleInvalidation() {
+        QTemporaryDir dir;
+        DeepSeekAccount account(nullptr, dir.path());
+        signIn(account);
+        QVERIFY(account.signedIn());
+        auto session = account.sessionId();
+        QFile file(dir.path() + "/session.dpapi");
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        QVERIFY(!file.readAll().contains("fixture-token"));
+        file.close();
+        QCOMPARE(SecretStore::read(dir.path() + "/session.dpapi")["issuer"].toString(),
+                 QString("https://platform.deepseek.com"));
+        QString error;
+        account.token("stale", [&](QString token, QString why) {
+            QVERIFY(token.isEmpty());
+            error = why;
+        });
+        QVERIFY(!error.isEmpty());
+        account.transport = [](QString method, QUrl url, QJsonObject body, QString token,
+                               DeepSeekAccount::JsonCallback done) {
+            QCOMPARE(method, QString("GET"));
+            QCOMPARE(url.toString(), QString("https://api.deepseek.com/models"));
+            QVERIFY(body.isEmpty());
+            QCOMPARE(token, QString("fixture-token"));
+            done({}, "HTTP 401");
+        };
+        account.models([&](QJsonObject, QString why) { error = why; });
+        QCOMPARE(error, QString("HTTP 401"));
+        QVERIFY(account.signedIn());
+        account.rejectToken("stale");
+        QVERIFY(account.signedIn());
+        account.rejectToken(session);
+        QVERIFY(!account.signedIn());
+        DeepSeekAccount reloaded(nullptr, dir.path());
+        QVERIFY(!reloaded.signedIn());
+        auto headers = DeepSeekAccount::headers();
+        QCOMPARE(headers.size(), 5);
+        QVERIFY(headers.contains({"x-client-platform", "desktop-win"}));
+    }
+    void rejectsWrongStateBeforeExchanging() {
+        QTemporaryDir dir;
+        DeepSeekAccount account(nullptr, dir.path());
+        QJsonObject init;
+        int exchanges = 0;
+        account.openBrowser = [](QUrl) { return true; };
+        account.transport = [&](QString, QUrl url, QJsonObject body, QString,
+                                DeepSeekAccount::JsonCallback done) {
+            if (url.path().endsWith("auth_init")) {
+                init = body;
+                done(envelope({{"authorize_id", "fixture"},
+                               {"authorize_url", "https://platform.deepseek.com/dsh/authorize"},
+                               {"expires_in", 120}}),
+                     {});
+            } else if (url.path().endsWith("auth_exchange"))
+                exchanges++;
+            else
+                done(envelope({}), {});
+        };
+        account.login();
+        auto callback = QUrl(init["redirect_uri"].toString());
+        QTcpSocket socket;
+        socket.connectToHost(QHostAddress::LocalHost, callback.port());
+        QTRY_COMPARE(socket.state(), QTcpSocket::ConnectedState);
+        socket.write("GET /oauth/callback?code=fixture&state=wrong HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
+        socket.flush();
+        QTRY_VERIFY(socket.bytesAvailable() > 0 || socket.state() == QTcpSocket::UnconnectedState);
+        QCOMPARE(exchanges, 0);
+        QVERIFY(!account.signedIn());
+    }
+    void cancelBeforeInitDoesNotOpenOrRestore() {
+        QTemporaryDir dir;
+        DeepSeekAccount account(nullptr, dir.path());
+        DeepSeekAccount::JsonCallback init;
+        int opens = 0, cancels = 0;
+        account.openBrowser = [&](QUrl) {
+            opens++;
+            return true;
+        };
+        account.transport = [&](QString, QUrl url, QJsonObject body, QString,
+                                DeepSeekAccount::JsonCallback done) {
+            if (url.path().endsWith("auth_init"))
+                init = done;
+            else if (url.path().endsWith("auth_cancel")) {
+                cancels++;
+                QCOMPARE(body["authorize_id"].toString(), QString("fixture"));
+                QVERIFY(!body["code_verifier"].toString().isEmpty());
+                done(envelope({}), {});
+            }
+        };
+        account.login();
+        account.cancelLogin();
+        init(envelope({{"authorize_id", "fixture"},
+                       {"authorize_url", "https://platform.deepseek.com/dsh/authorize"},
+                       {"expires_in", 120}}),
+             {});
+        QCOMPARE(opens, 0);
+        QCOMPARE(cancels, 1);
+        QVERIFY(!account.signedIn());
+    }
+    void messagesWireAndTerminalHandling_data() {
+        QTest::addColumn<QString>("reason");
+        QTest::addColumn<bool>("terminal");
+        QTest::addColumn<int>("http");
+        QTest::addColumn<bool>("success");
+        QTest::newRow("complete") << QString("end_turn") << true << 200 << true;
+        QTest::newRow("truncated") << QString("end_turn") << false << 200 << false;
+        QTest::newRow("max-tokens") << QString("max_tokens") << true << 200 << false;
+        QTest::newRow("auth-expired") << QString() << false << 401 << false;
+        QTest::newRow("permission-denied") << QString() << false << 403 << false;
+    }
+    void messagesWireAndTerminalHandling() {
+        QFETCH(QString, reason);
+        QFETCH(bool, terminal);
+        QFETCH(int, http);
+        QFETCH(bool, success);
+        QTemporaryDir dir;
+        DeepSeekAccount account(nullptr, dir.path());
+        signIn(account);
+        QVERIFY(account.signedIn());
+        TextClient client(nullptr, &account);
+        int reads = 0;
+        client.keyReader = [&](QString) {
+            reads++;
+            return QString();
+        };
+        QNetworkRequest sent;
+        QByteArray sentBody;
+        client.postRequest = [&](const QNetworkRequest &request, const QByteArray &body) {
+            sent = request;
+            sentBody = body;
+            QByteArray stream = "data: "
+                                "{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\","
+                                "\"text\":\"answer\"}}\n\n";
+            stream += "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"" + reason.toUtf8() +
+                      "\"}}\n\n";
+            if (terminal)
+                stream += "data: {\"type\":\"message_stop\"}\n\n";
+            return static_cast<QNetworkReply *>(new FixtureReply(request, stream, http, &client));
+        };
+        QSignalSpy done(&client, &TextClient::finished), failed(&client, &TextClient::failed),
+            delta(&client, &TextClient::textDelta);
+        TextRequest request;
+        request.config.provider = "DeepSeek";
+        request.config.accountLogin = true;
+        request.config.accountId = account.sessionId();
+        request.config.baseUrl = "https://api.deepseek.com";
+        request.config.model = "fixture-model";
+        request.messages = {QJsonObject{{"role", "user"}, {"content", "fixture"}}};
+        client.start(request);
+        QTRY_VERIFY(!done.isEmpty() || !failed.isEmpty());
+        QCOMPARE(done.size(), success ? 1 : 0);
+        QCOMPARE(failed.size(), success ? 0 : 1);
+        QCOMPARE(reads, 0);
+        QCOMPARE(sent.url().toString(), QString("https://api.deepseek.com/anthropic/v1/messages"));
+        QCOMPARE(sent.rawHeader("x-dsh-auth-token"), QByteArray("fixture-token"));
+        QCOMPARE(sent.rawHeader("anthropic-version"), QByteArray("2023-06-01"));
+        QVERIFY(!sent.hasRawHeader("Authorization"));
+        QVERIFY(!sent.hasRawHeader("x-api-key"));
+        QVERIFY(!sent.hasRawHeader("x-client-platform"));
+        auto payload = QJsonDocument::fromJson(sentBody).object();
+        QCOMPARE(payload["max_tokens"].toInt(), 4096);
+        QVERIFY(!payload.contains("response_format"));
+        if (success)
+            QCOMPARE(delta.first()[1].toString(), QString("answer"));
+        QCOMPARE(account.signedIn(), http != 401);
+    }
+    void rejectsCrossOriginBrowserDestination() {
+        QTemporaryDir dir;
+        DeepSeekAccount account(nullptr, dir.path());
+        int opens = 0;
+        account.openBrowser = [&](QUrl) {
+            opens++;
+            return true;
+        };
+        account.transport = [](QString, QUrl, QJsonObject, QString, DeepSeekAccount::JsonCallback done) {
+            done({{"code", 0},
+                  {"data", QJsonObject{{"biz_code", 0},
+                                       {"biz_data",
+                                        QJsonObject{{"authorize_id", "fixture"},
+                                                    {"authorize_url", "https://evil.example/dsh/authorize"},
+                                                    {"expires_in", 120}}}}}},
+                 {});
+        };
+        account.login();
+        QCOMPARE(opens, 0);
+        QVERIFY(!account.signedIn());
+    }
+};
+QTEST_MAIN(DeepSeekTest)
+#include "tst_deepseek.moc"

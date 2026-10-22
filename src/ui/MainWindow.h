@@ -31,7 +31,7 @@ class MainWindow : public QMainWindow {
     QPlainTextEdit *experience;
     QListWidget *transcripts, *questions;
     QTextBrowser *answer, *report;
-    QPushButton *startButton, *pauseButton, *finishButton, *reviewButton, *deleteButton;
+    QPushButton *startButton, *pauseButton, *finishButton, *discardButton, *reviewButton, *deleteButton;
     QLabel *state, *remoteStatus, *micStatus, *answerSource;
     QProgressBar *remoteLevel, *micLevel;
     QMediaPlayer player;
@@ -45,6 +45,7 @@ class MainWindow : public QMainWindow {
     void devices();
     QString ensureSession();
     void start();
+    void discardRecording();
     void addQuestion();
     void exportMarkdown();
     void playSelected();

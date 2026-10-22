@@ -25,6 +25,7 @@ class SessionController : public QObject {
     void startRecording(QString sid, QString remoteId, QByteArray microphoneId);
     void togglePause();
     void finish();
+    Q_INVOKABLE bool discardRecording();
     void extractNow(QString sid);
     void editTranscript(QString sid, QString id, QString text);
     void editQuestion(QString sid, QString id, QString text);
