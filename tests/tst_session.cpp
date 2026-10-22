@@ -1,5 +1,6 @@
 #include "app/SessionController.h"
 #include "app/AppSettings.h"
+#include "preparation/Preparation.h"
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QtTest>
@@ -17,6 +18,36 @@ class SessionTest : public QObject {
     Q_OBJECT
     QTemporaryDir settings;
   private slots:
+    void sessionSnapshotGuidesFinalTranscriptAndPreservesRaw() {
+        QTemporaryDir data;
+        SessionController c(data.path());
+        c.autoExtract = false;
+        c.autoAnswer = false;
+        c.audio.renderFactory = [](const QString &) -> AudioSource * { return new IdleSource; };
+        c.audio.microphoneFactory = [](const QByteArray &) -> AudioSource * { return new IdleSource; };
+        QJsonObject p{{"company", "original"},
+                      {"role", "Qt"},
+                      {"terms", QJsonArray{QJsonObject{{"term", "Qt"},
+                                                       {"aliases", QJsonArray{QStringLiteral("丘特")}},
+                                                       {"meaning", "framework"}}}}};
+        p["termsBasis"] = Preparation::fingerprint(p);
+        auto sid = c.createSession("test", "Qt", "", p);
+        p["company"] = "next-company";
+        c.startRecording(sid, "fixture", {});
+        auto transcriber = c.findChildren<RealtimeTranscriber *>().first();
+        transcriber->segmentChanged({{"id", "speech"},
+                                     {"sessionId", sid},
+                                     {"channel", "remote"},
+                                     {"text", QStringLiteral("丘特的信号槽是什么")},
+                                     {"final", true}});
+        auto speech = c.store.list("transcripts", sid).first();
+        QCOMPARE(speech["text"].toString(), QStringLiteral("Qt的信号槽是什么"));
+        QCOMPARE(speech["rawText"].toString(), QStringLiteral("丘特的信号槽是什么"));
+        QCOMPARE(c.store.list("sessions", sid).first()["preparation"].toObject()["company"].toString(),
+                 QString("original"));
+        QVERIFY(c.discardRecording());
+    }
+
     void discardsOnlyLiveSession_data() {
         QTest::addColumn<bool>("paused");
         QTest::newRow("recording") << false;

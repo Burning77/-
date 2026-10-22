@@ -17,7 +17,7 @@ class SessionController : public QObject {
     SessionStore store;
     TextClient client;
     AudioController audio;
-    QString createSession(QString title, QString role, QString experience);
+    QString createSession(QString title, QString role, QString experience, QJsonObject preparation = {});
     QString addQuestion(QString sid, QString text, bool generate = true);
     QString answerQuestion(QString sid, QString questionId, const ProviderConfig &);
     QString review(QString sid);
@@ -61,6 +61,7 @@ class SessionController : public QObject {
     RealtimeTranscriber remoteTranscriber, micTranscriber;
     LocalTranscriber localRemote, localMic;
     bool usingLocalAsr = false;
+    QJsonObject livePreparation;
     QHash<QString, QJsonObject> pendingRemote;
     QTimer debounce, deadline, gapFlushTimer, generationFlushTimer;
     QHash<QString, QJsonObject> gapRows;

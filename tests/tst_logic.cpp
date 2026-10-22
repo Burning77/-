@@ -1,8 +1,51 @@
 #include "ai/InterviewLogic.h"
+#include "preparation/Preparation.h"
 #include <QtTest>
 class LogicTest : public QObject {
     Q_OBJECT
   private slots:
+    void preparationReachesExtractionAnswersAndReviews() {
+        QJsonObject prep{{"company", QStringLiteral("示例芯片公司")},
+                         {"role", "Firmware"},
+                         {"jobDescription", "RTOS C++"},
+                         {"terms", QJsonArray{QJsonObject{{"term", "RTOS"},
+                                                          {"meaning", QStringLiteral("实时操作系统")},
+                                                          {"aliases", QJsonArray{}}}}}};
+        prep["termsBasis"] = Preparation::fingerprint(prep);
+        QJsonObject session{{"id", "s"}, {"role", "Firmware"}, {"preparation", prep}};
+        QList<QJsonObject> segments{{{"id", "speech"},
+                                     {"sessionId", "s"},
+                                     {"channel", "remote"},
+                                     {"final", true},
+                                     {"text", "RTOS?"}}};
+        for (auto request : {InterviewLogic::extraction(session, segments, {}),
+                             InterviewLogic::answer(session, {{"id", "q"}, {"text", "RTOS?"}}, segments, {}),
+                             InterviewLogic::review(session, {}, segments, {})}) {
+            auto body = QString::fromUtf8(QJsonDocument(request.messages).toJson());
+            QVERIFY(body.contains(QStringLiteral("示例芯片公司")));
+            QVERIFY(body.contains(QStringLiteral("实时操作系统")));
+        }
+    }
+
+    void terminologyRawTextCannotDisplaceReviewEvidence() {
+        QJsonObject session{{"id", "s"}};
+        QList<QJsonObject> segments;
+        for (int i = 0; i < 6; i++)
+            segments.append({{"id", QString("speech-%1").arg(i)},
+                             {"sessionId", "s"},
+                             {"channel", "microphone"},
+                             {"final", true},
+                             {"text", QString("UNIQUE-%1-").arg(i) + QString(1500, QChar('A' + i))},
+                             {"terminologyAdjusted", true},
+                             {"rawText", QString(5000, 'R')}});
+        for (auto chunk : InterviewLogic::reviewChunks({}, segments)) {
+            auto request = InterviewLogic::review(session, {}, chunk.sources, {});
+            auto input = request.messages.last().toObject()["content"].toString();
+            for (auto source : chunk.sources)
+                QVERIFY2(input.contains(source["text"].toString()),
+                         "Raw transcript annotation must not displace any chunk's evidence text");
+        }
+    }
     void boundsEntireReviewAndPreservesOversizedSpeech() {
         QString speech(26000, QChar('A'));
         speech.append("THE-END");

@@ -1,5 +1,6 @@
 #include "SessionController.h"
 #include "ai/InterviewLogic.h"
+#include "preparation/Preparation.h"
 #include "app/AppSettings.h"
 #include <QDir>
 #include <QJsonDocument>
@@ -162,12 +163,14 @@ bool SessionController::persist(QString kind, const QJsonObject &row) {
         QTimer::singleShot(0, this, &SessionController::finish);
     return false;
 }
-QString SessionController::createSession(QString title, QString role, QString experience) {
+QString SessionController::createSession(QString title, QString role, QString experience,
+                                         QJsonObject preparation) {
     auto id = newId();
     if (!persist("sessions", {{"id", id},
                               {"title", title.isEmpty() ? QStringLiteral("面试记录") : title},
                               {"role", role},
                               {"experience", experience},
+                              {"preparation", preparation},
                               {"state", "notes"},
                               {"createdAt", utcNow()}}))
         return {};
@@ -419,6 +422,7 @@ void SessionController::startRecording(QString sid, QString remoteId, QByteArray
     auto s = get("sessions", sid, sid);
     s["state"] = "recording";
     persist("sessions", s);
+    livePreparation = s["preparation"].toObject();
     auto config = AppSettings().transcription();
     usingLocalAsr = AppSettings().transcriptionMode() == "Local";
     if (usingLocalAsr) {
@@ -426,8 +430,8 @@ void SessionController::startRecording(QString sid, QString remoteId, QByteArray
         localRemote.connectSession(sid, "remote", model);
         localMic.connectSession(sid, "microphone", model);
     } else {
-        remoteTranscriber.connectSession(sid, "remote", config);
-        micTranscriber.connectSession(sid, "microphone", config);
+        remoteTranscriber.connectSession(sid, "remote", config, livePreparation);
+        micTranscriber.connectSession(sid, "microphone", config, livePreparation);
     }
     audio.start(store.root(), sid, remoteId, microphoneId, 0);
     emit stateChanged();
@@ -573,6 +577,7 @@ void SessionController::acceptSegment(QJsonObject row) {
     auto existing = get("transcripts", liveSid, row["id"].toString());
     if (existing.value("manualEdited").toBool())
         return;
+    row = Preparation::correct(row, livePreparation);
     if (!persist("transcripts", row))
         return;
     emit changed(liveSid);

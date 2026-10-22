@@ -1,5 +1,7 @@
 #include "MainWindow.h"
 #include "SettingsDialog.h"
+#include "PreparationDialog.h"
+#include "preparation/Preparation.h"
 #include "ai/InterviewLogic.h"
 #include "app/AppSettings.h"
 #include <QApplication>
@@ -31,28 +33,61 @@ static QString timestamp(qint64 ms) {
         .arg((sec / 60) % 60, 2, 10, QChar('0'))
         .arg(sec % 60, 2, 10, QChar('0'));
 }
+void MainWindow::schedulePlacement(bool forcePrimary) {
+    if (correctingPlacement)
+        return;
+    forcePrimaryPlacement |= forcePrimary;
+    if (!placementTimer.isActive())
+        placementTimer.start();
+}
+bool MainWindow::event(QEvent *event) {
+    auto type = event->type();
+    bool handled = QMainWindow::event(event);
+    if (type == QEvent::WindowActivate || type == QEvent::WindowStateChange)
+        schedulePlacement();
+    return handled;
+}
 void MainWindow::showEvent(QShowEvent *event) {
     QMainWindow::showEvent(event);
-    if (initiallyPositioned)
-        return;
+    const bool first = !initiallyPositioned;
     initiallyPositioned = true;
-    if (auto primary = QGuiApplication::primaryScreen()) {
-        if (windowHandle())
+    if (first && windowHandle()) {
+        if (auto primary = QGuiApplication::primaryScreen())
             windowHandle()->setScreen(primary);
-        // Wait for native frame margins before centering, including the title bar.
-        QTimer::singleShot(0, this, [this] {
-            if (auto primary = QGuiApplication::primaryScreen()) {
-                if (auto native = windowHandle()) {
-                    const auto available = primary->availableGeometry();
-                    resize(qMin(1280, available.width() * 85 / 100),
-                           qMin(780, available.height() * 85 / 100));
-                    auto frame = native->frameGeometry();
-                    frame.moveCenter(available.center());
-                    native->setFramePosition(frame.topLeft());
-                }
-            }
-        });
+        connect(windowHandle(), &QWindow::screenChanged, this, [this] { schedulePlacement(); });
     }
+    schedulePlacement(first);
+}
+void MainWindow::ensureOnScreen(bool forcePrimary) {
+    auto native = windowHandle();
+    auto primary = QGuiApplication::primaryScreen();
+    if (!native || !primary || !isVisible() || isMinimized())
+        return;
+    const bool specialState = isMaximized() || isFullScreen() ||
+                              native->windowState() == Qt::WindowMaximized ||
+                              native->windowState() == Qt::WindowFullScreen;
+    for (auto screen : QGuiApplication::screens()) {
+        if (specialState && screen->geometry().contains(native->frameGeometry().center()) &&
+            screen->geometry().contains(frameGeometry().center()))
+            return;
+        if (!specialState && !forcePrimary && screen->availableGeometry().contains(native->frameGeometry()) &&
+            screen->availableGeometry().contains(frameGeometry()))
+            return;
+    }
+    correctingPlacement = true;
+    if (specialState) {
+        showNormal();
+        native->setWindowState(Qt::WindowNoState);
+    }
+    native->setScreen(primary);
+    const auto available = primary->availableGeometry();
+    // Leave room for the native title bar and borders, including after DPI changes.
+    QSize limit(qMin(1280, available.width() * 85 / 100), qMin(780, available.height() * 85 / 100));
+    resize(forcePrimary ? limit : size().boundedTo(limit));
+    auto frame = native->frameGeometry();
+    frame.moveCenter(available.center());
+    native->setFramePosition(frame.topLeft());
+    correctingPlacement = false;
 }
 static QString stateName(QString s) {
     static QHash<QString, QString> labels{
@@ -68,6 +103,26 @@ MainWindow::MainWindow(QWidget *parent, QString dataRoot)
     : QMainWindow(parent), controller(dataRoot, this), player(this), output(this) {
     setWindowTitle(QStringLiteral("面试助手 · 实时记录与复盘 · ") + QStringLiteral(INTERVIEW_APP_VERSION));
     resize(1280, 780);
+    placementTimer.setSingleShot(true);
+    placementTimer.setInterval(0);
+    connect(&placementTimer, &QTimer::timeout, this, [this] {
+        const bool force = forcePrimaryPlacement;
+        forcePrimaryPlacement = false;
+        ensureOnScreen(force);
+    });
+    auto watchScreen = [this](QScreen *screen) {
+        connect(screen, &QScreen::availableGeometryChanged, this, [this] { schedulePlacement(); });
+        connect(screen, &QScreen::geometryChanged, this, [this] { schedulePlacement(); });
+        connect(screen, &QScreen::logicalDotsPerInchChanged, this, [this] { schedulePlacement(); });
+    };
+    for (auto screen : QGuiApplication::screens())
+        watchScreen(screen);
+    connect(qGuiApp, &QGuiApplication::screenAdded, this, [this, watchScreen](QScreen *screen) {
+        watchScreen(screen);
+        schedulePlacement();
+    });
+    connect(qGuiApp, &QGuiApplication::screenRemoved, this, [this] { schedulePlacement(); });
+    connect(qGuiApp, &QGuiApplication::primaryScreenChanged, this, [this] { schedulePlacement(); });
     setStyleSheet(QStringLiteral(
         "QMainWindow{background:#f3f6fb} QWidget{font-family:'Microsoft YaHei "
         "UI';font-size:13px;color:#243047} QGroupBox{background:white;border:1px solid "
@@ -103,6 +158,9 @@ MainWindow::MainWindow(QWidget *parent, QString dataRoot)
     provider->addItems({"ChatGPT", "OpenAI", "DeepSeek"});
     provider->setCurrentText(AppSettings().textConfig().provider);
     header->addWidget(provider);
+    auto preparationButton = new QPushButton(QStringLiteral("面试准备"));
+    preparationButton->setObjectName("preparationButton");
+    header->addWidget(preparationButton);
     auto settings = new QPushButton(QStringLiteral("设置"));
     settings->setObjectName("settingsButton");
     header->addWidget(settings);
@@ -348,6 +406,28 @@ MainWindow::MainWindow(QWidget *parent, QString dataRoot)
         refreshHistory();
         refresh();
     });
+    auto previousPreparation = Preparation::load(controller.store.root());
+    if (!previousPreparation.isEmpty()) {
+        role->setText(previousPreparation["role"].toString());
+        experience->setPlainText(previousPreparation["experience"].toString());
+    }
+    connect(preparationButton, &QPushButton::clicked, this, [this] {
+        auto before = Preparation::load(controller.store.root());
+        auto prepared = currentPreparation();
+        const bool locked = controller.recording();
+        if (locked) {
+            auto sessions = controller.store.list("sessions", controller.liveSessionId());
+            if (!sessions.isEmpty())
+                prepared = sessions.first()["preparation"].toObject();
+        }
+        PreparationDialog dialog(controller.store.root(), prepared, locked, this);
+        dialog.exec();
+        auto saved = Preparation::load(controller.store.root());
+        if (!locked && saved != before) {
+            role->setText(saved["role"].toString());
+            experience->setPlainText(saved["experience"].toString());
+        }
+    });
     refreshHistory();
     refresh();
     updateState();
@@ -367,17 +447,25 @@ void MainWindow::devices() {
     if (micDevice->count() == 0)
         micDevice->addItem(QStringLiteral("未找到麦克风"), QByteArray());
 }
+QJsonObject MainWindow::currentPreparation() const {
+    auto prepared = Preparation::load(controller.store.root());
+    prepared["role"] = role->text();
+    prepared["experience"] = experience->toPlainText();
+    return prepared;
+}
 QString MainWindow::ensureSession() {
     if (!viewedSession.isEmpty())
         return viewedSession;
-    viewedSession = controller.createSession(title->text(), role->text(), experience->toPlainText());
+    viewedSession = controller.createSession(title->text(), role->text(), experience->toPlainText(),
+                                             currentPreparation());
     refreshHistory();
     return viewedSession;
 }
 void MainWindow::start() {
     if (controller.recording())
         return;
-    auto sid = controller.createSession(title->text(), role->text(), experience->toPlainText());
+    auto sid = controller.createSession(title->text(), role->text(), experience->toPlainText(),
+                                        currentPreparation());
     if (sid.isEmpty())
         return;
     viewedSession = sid;
@@ -453,6 +541,8 @@ void MainWindow::refresh() {
                                                             : QStringLiteral("我 / 麦克风"),
                                  row["final"].toBool() ? QString() : QStringLiteral(" · 转写中"),
                                  row["text"].toString());
+            if (row.value("terminologyAdjusted").toBool())
+                text += QStringLiteral("\n[术语辅助，原转写：%1]").arg(row["rawText"].toString());
             auto item = new QListWidgetItem(text, transcripts);
             item->setData(Qt::UserRole, row["id"].toString());
             if (row["id"] == selected)

@@ -20,12 +20,18 @@ class MainWindow : public QMainWindow {
   protected:
     void closeEvent(QCloseEvent *) override;
     void showEvent(QShowEvent *) override;
+    bool event(QEvent *) override;
 
   private:
     SessionController controller;
     QString viewedSession;
     bool closingAfterFinish = false;
     bool initiallyPositioned = false;
+    bool forcePrimaryPlacement = false;
+    bool correctingPlacement = false;
+    QTimer placementTimer;
+    void schedulePlacement(bool forcePrimary = false);
+    void ensureOnScreen(bool forcePrimary);
     QComboBox *history, *provider, *remoteDevice, *micDevice;
     QLineEdit *title, *role, *manual;
     QPlainTextEdit *experience;
@@ -43,6 +49,7 @@ class MainWindow : public QMainWindow {
     void refreshAnswers();
     void updateState();
     void devices();
+    QJsonObject currentPreparation() const;
     QString ensureSession();
     void start();
     void discardRecording();

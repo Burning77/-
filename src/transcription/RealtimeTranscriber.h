@@ -14,7 +14,8 @@ class RealtimeTranscriber : public QObject {
     ~RealtimeTranscriber() {
         stop();
     }
-    void connectSession(QString sessionId, QString channel, const ProviderConfig &);
+    void connectSession(QString sessionId, QString channel, const ProviderConfig &,
+                        const QJsonObject &preparation = {});
     void appendAudio(const QByteArray &pcm, qint64 startMs);
     void finish(bool closeInput = true);
     void stop();
@@ -34,6 +35,7 @@ class RealtimeTranscriber : public QObject {
     void flush();
     QString sid, channel;
     ProviderConfig config;
+    QJsonObject preparation;
     WebSocketTransport *transport = nullptr;
     TranscriptAssembler assembler;
     QByteArray pending;

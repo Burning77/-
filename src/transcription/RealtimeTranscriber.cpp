@@ -1,14 +1,17 @@
 #include "RealtimeTranscriber.h"
 #include "app/CredentialStore.h"
+#include "preparation/Preparation.h"
 #include <QJsonDocument>
 #include <QTimer>
 #include <QtEndian>
 #include <cmath>
-void RealtimeTranscriber::connectSession(QString s, QString ch, const ProviderConfig &c) {
+void RealtimeTranscriber::connectSession(QString s, QString ch, const ProviderConfig &c,
+                                         const QJsonObject &p) {
     stop();
     sid = s;
     channel = ch;
     config = c;
+    preparation = p;
     closing = false;
     retries = 0;
     assembler = TranscriptAssembler();
@@ -34,12 +37,7 @@ void RealtimeTranscriber::connectSocket() {
     connect(ws, &WebSocketTransport::connected, this, [this, ws] {
         if (ws != transport || closing)
             return;
-        QJsonObject transcription{{"model", config.model}};
-        if (config.model == "gpt-live-transcribe") {
-            transcription["languages"] = QJsonArray{"zh"};
-            transcription["delay"] = "low";
-        } else
-            transcription["language"] = "zh";
+        auto transcription = Preparation::transcriptionOptions(config.model, preparation);
         send({{"type", "session.update"},
               {"session",
                QJsonObject{

@@ -1,6 +1,8 @@
 #include "ui/MainWindow.h"
 #include "ui/SettingsDialog.h"
 #include "app/AppSettings.h"
+#include "preparation/Preparation.h"
+#include <QTableWidget>
 #include <QComboBox>
 #include <QFontDatabase>
 #include <QInputDialog>
@@ -53,6 +55,10 @@ class WindowIdleSource : public AudioSource {
 class WindowTest : public QObject {
     Q_OBJECT
   private slots:
+    void initTestCase() {
+        QFontDatabase::addApplicationFont(QStringLiteral("C:/Windows/Fonts/msyh.ttc"));
+        QApplication::setFont(QFont("Microsoft YaHei", 9));
+    }
     void firstShowCentersOnPrimaryAndKeepsLaterMoves() {
         QTemporaryDir dir(QDir::currentPath() + "/position-XXXXXX");
         MainWindow w(nullptr, dir.path());
@@ -72,6 +78,128 @@ class WindowTest : public QObject {
         w.show();
         QTest::qWait(30);
         QCOMPARE(w.pos(), moved);
+    }
+    void reShowingOffscreenWindowReturnsItToPrimary() {
+        QTemporaryDir dir(QDir::currentPath() + "/recover-show-XXXXXX");
+        MainWindow w(nullptr, dir.path());
+        w.show();
+        QTest::qWait(60);
+        const auto available = QGuiApplication::primaryScreen()->availableGeometry();
+        w.hide();
+        w.move(available.right() + 2000, available.bottom() + 2000);
+        w.show();
+        QTest::qWait(80);
+        QTRY_VERIFY_WITH_TIMEOUT(available.contains(w.frameGeometry()), 500);
+    }
+    void visibleMaximizedWindowKeepsItsStateOnActivation() {
+        QTemporaryDir dir(QDir::currentPath() + "/visible-maximized-XXXXXX");
+        MainWindow w(nullptr, dir.path());
+        w.show();
+        QTest::qWait(60);
+        w.showMaximized();
+        QTest::qWait(30);
+        QVERIFY(w.isMaximized());
+        QEvent activated(QEvent::WindowActivate);
+        QCoreApplication::sendEvent(&w, &activated);
+        QTest::qWait(80);
+        QVERIFY(w.isMaximized());
+    }
+    void geometryAfterMaximizeCanStillBeRecovered() {
+        QTemporaryDir dir(QDir::currentPath() + "/recover-maximized-XXXXXX");
+        MainWindow w(nullptr, dir.path());
+        w.show();
+        QTest::qWait(60);
+        const auto available = QGuiApplication::primaryScreen()->availableGeometry();
+        w.showMaximized();
+        QTest::qWait(30);
+        w.move(available.right() + 2000, available.bottom() + 2000);
+        QVERIFY(!available.contains(w.frameGeometry().center()));
+        QEvent activated(QEvent::WindowActivate);
+        QCoreApplication::sendEvent(&w, &activated);
+        QTest::qWait(80);
+        QTRY_VERIFY_WITH_TIMEOUT(available.contains(w.frameGeometry()), 500);
+    }
+    void activatingOffscreenWindowReturnsItToPrimary() {
+        QTemporaryDir dir(QDir::currentPath() + "/recover-activate-XXXXXX");
+        MainWindow w(nullptr, dir.path());
+        w.show();
+        QTest::qWait(60);
+        const auto available = QGuiApplication::primaryScreen()->availableGeometry();
+        w.move(available.right() + 2000, available.bottom() + 2000);
+        QEvent activated(QEvent::WindowActivate);
+        QCoreApplication::sendEvent(&w, &activated);
+        QTest::qWait(80);
+        QTRY_VERIFY_WITH_TIMEOUT(available.contains(w.frameGeometry()), 500);
+    }
+    void startInterviewIncludesPreparedCompanyAndGlossary() {
+        QTemporaryDir dir(QDir::currentPath() + "/start-prepared-XXXXXX");
+        QJsonObject prepared{{"company", QStringLiteral("开始路径测试公司")},
+                             {"role", "Qt"},
+                             {"terms", QJsonArray{QJsonObject{{"term", "Qt"},
+                                                              {"aliases", QJsonArray{QStringLiteral("丘特")}},
+                                                              {"meaning", "framework"}}}}};
+        prepared["termsBasis"] = Preparation::fingerprint(prepared);
+        QVERIFY(Preparation::save(dir.path(), prepared));
+        MainWindow w(nullptr, dir.path());
+        auto c = w.findChild<SessionController *>();
+        c->autoExtract = false;
+        c->autoAnswer = false;
+        c->audio.renderFactory = [](const QString &) -> AudioSource * { return new WindowIdleSource; };
+        c->audio.microphoneFactory = [](const QByteArray &) -> AudioSource * { return new WindowIdleSource; };
+        w.findChild<QPushButton *>("startButton")->click();
+        QVERIFY(c->recording());
+        auto snapshot = c->store.list("sessions", c->liveSessionId()).first()["preparation"].toObject();
+        QCOMPARE(snapshot["company"].toString(), QStringLiteral("开始路径测试公司"));
+        c->findChildren<RealtimeTranscriber *>().first()->segmentChanged({{"id", "term"},
+                                                                          {"sessionId", c->liveSessionId()},
+                                                                          {"channel", "remote"},
+                                                                          {"final", true},
+                                                                          {"text", QStringLiteral("丘特")}});
+        QCOMPARE(c->store.list("transcripts", c->liveSessionId()).first()["text"].toString(), QString("Qt"));
+        QVERIFY(c->discardRecording());
+    }
+    void preparationDialogSavesDraftAndNewSessionGetsSnapshot() {
+        QTemporaryDir dir(QDir::currentPath() + "/preparation-ui-XXXXXX");
+        MainWindow w(nullptr, dir.path());
+        auto prepare = w.findChild<QPushButton *>("preparationButton");
+        QVERIFY(prepare);
+        QTimer::singleShot(0, &w, [] {
+            auto dialog = qobject_cast<QDialog *>(QApplication::activeModalWidget());
+            QVERIFY(dialog);
+            auto company = dialog->findChild<QLineEdit *>("prepCompany"),
+                 role = dialog->findChild<QLineEdit *>("prepRole");
+            QVERIFY(company);
+            QVERIFY(role);
+            company->setText(QStringLiteral("测试科技"));
+            role->setText("Qt engineer");
+            auto terms = dialog->findChild<QTableWidget *>("prepTerms");
+            QVERIFY(terms);
+            terms->setRowCount(1);
+            terms->setItem(0, 0, new QTableWidgetItem("Qt"));
+            terms->setItem(0, 1, new QTableWidgetItem("Q T"));
+            terms->setItem(0, 2, new QTableWidgetItem(QStringLiteral("界面框架")));
+            QVERIFY(dialog->grab().save(QDir::currentPath() + "/preparation-preview.png"));
+            auto save = dialog->findChild<QPushButton *>("savePreparation");
+            QVERIFY(save);
+            save->click();
+        });
+        prepare->click();
+        auto draft = Preparation::load(dir.path());
+        QCOMPARE(draft["company"].toString(), QStringLiteral("测试科技"));
+        QLineEdit *manual = nullptr;
+        for (auto line : w.findChildren<QLineEdit *>())
+            if (line->placeholderText().startsWith(QStringLiteral("手动输入问题")))
+                manual = line;
+        QVERIFY(manual);
+        manual->setText("Qt?");
+        auto controller = w.findChild<SessionController *>();
+        controller->client.keyReader = [](QString) { return QString(); };
+        button(w, QStringLiteral("添加问题并分析"))->click();
+        auto sessions = controller->store.list("sessions");
+        QCOMPARE(sessions.size(), 1);
+        QCOMPARE(sessions.first()["preparation"].toObject()["company"].toString(),
+                 QStringLiteral("测试科技"));
+        QCOMPARE(sessions.first()["role"].toString(), QString("Qt engineer"));
     }
     void discardConfirmationTargetsLiveSessionAndKeepsOtherHistory() {
         QTemporaryDir dir(QDir::currentPath() + "/discard-window-XXXXXX");
