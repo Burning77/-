@@ -20,3 +20,5 @@ OAuth 回调/PKCE、签名和claims、权限拒绝、刷新/注销/取消及恶�
 - https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference
 - https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations
 - https://alphacephei.com/vosk/models
+
+实施裁定：OAuth 凭据改用 Windows DPAPI 加密 JSON 文件并原子替换，解决多令牌包大小与轮换一致性；原 API Key 仍用凭据管理器。账户切换取消请求等待者，但有效的续期仍验证并安全保存；退出/重新完成授权则使旧续期失效。应用以跨进程锁限制单实例。识别失败持久记录问题和缺失区间，不作为完整转写保存。

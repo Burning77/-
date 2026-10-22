@@ -138,6 +138,7 @@ void LocalWorker::run() {
     if (!shared) {
         finishState();
         emit message(error);
+        emit failure(error);
         return;
     }
     if (isInterruptionRequested()) {
@@ -148,6 +149,7 @@ void LocalWorker::run() {
     if (!recognizer) {
         finishState();
         emit message(QStringLiteral("本地识别器创建失败"));
+        emit failure(QStringLiteral("本地识别器创建失败"));
         return;
     }
     emit message(QStringLiteral("本地中文识别已就绪，音频留在本机"));
@@ -206,6 +208,7 @@ void LocalWorker::run() {
             }
             if (accepted < 0) {
                 emit message(QStringLiteral("本地音频解码失败"));
+                emit failure(QStringLiteral("本地音频解码失败"));
                 break;
             }
             if (accepted || end - start >= 8000)

@@ -36,13 +36,19 @@ class LocalAsrTest : public QObject {
     void missingEngineFailsAsynchronously() {
         LocalTranscriber t;
         QSignalSpy status(&t, &LocalTranscriber::status);
+        QSignalSpy gaps(&t, &LocalTranscriber::gap);
         QElapsedTimer clock;
         clock.start();
         t.connectSession("s", "remote", "missing-model", "missing-runtime");
+        t.appendAudio(QByteArray(24000, 0), 0);
         QVERIFY(clock.elapsed() < 200);
         QTRY_VERIFY_WITH_TIMEOUT(!status.isEmpty(), 3000);
         QVERIFY(status.last()[1].toString().contains(QStringLiteral("失败")));
         QVERIFY(!t.hasUnfinishedAudio());
+        t.appendAudio(QByteArray(24000, 0), 500);
+        QVERIFY(!gaps.isEmpty());
+        QCOMPARE(gaps.first()[1].toLongLong(), 0);
+        QCOMPARE(gaps.last()[2].toLongLong(), 1000);
     }
     void realModelLoadsAndQueueIsBounded() {
         auto root = qEnvironmentVariable("INTERVIEW_LOCAL_ASR_ROOT");

@@ -17,6 +17,27 @@ class SessionTest : public QObject {
     Q_OBJECT
     QTemporaryDir settings;
   private slots:
+    void failedLocalRecognizerPersistsIncompleteSession() {
+        QTemporaryDir data;
+        SessionController c(data.path());
+        c.autoExtract = false;
+        c.audio.renderFactory = [](const QString &) -> AudioSource * { return new IdleSource; };
+        c.audio.microphoneFactory = [](const QByteArray &) -> AudioSource * { return new IdleSource; };
+        const auto mode = AppSettings().transcriptionMode(), model = AppSettings().localModelPath();
+        AppSettings().saveLocalTranscription("Local", "missing-model");
+        auto sid = c.createSession("recognizer-failure", "", "");
+        QSignalSpy status(&c, &SessionController::transcriptionStatus);
+        c.startRecording(sid, "fixture", {});
+        AppSettings().saveLocalTranscription(mode, model);
+        QTRY_VERIFY_WITH_TIMEOUT(!status.isEmpty(), 3000);
+        c.audio.pcmReady("remote", QByteArray(48000, 0), 0);
+        c.finish();
+        QTRY_VERIFY_WITH_TIMEOUT(!c.recording(), 6500);
+        auto session = c.store.list("sessions").first();
+        QVERIFY(session["transcriptIncomplete"].toBool());
+        QVERIFY(!session["transcriptionIssues"].toArray().isEmpty());
+        QVERIFY(!c.store.list("gaps", sid).isEmpty());
+    }
     void coalescesContinuousGapNotifications() {
         QTemporaryDir data;
         SessionController c(data.path());

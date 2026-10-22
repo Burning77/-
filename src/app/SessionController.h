@@ -67,6 +67,7 @@ class SessionController : public QObject {
     QElapsedTimer clock;
     qint64 pauseStarted = 0;
     QStringList audioIssues;
+    QStringList transcriptionIssues;
     bool live = false, pauseState = false, stoppingState = false;
     QJsonObject get(QString kind, QString sid, QString id) const;
     bool persist(QString kind, const QJsonObject &);

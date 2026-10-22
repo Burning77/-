@@ -40,6 +40,8 @@ class WindowTest : public QObject {
     Q_OBJECT
   private slots:
     void offersChatGptLoginAndLocalSpeech() {
+        QFontDatabase::addApplicationFont(QStringLiteral("C:/Windows/Fonts/msyh.ttc"));
+        QApplication::setFont(QFont("Microsoft YaHei", 9));
         QTemporaryDir dir(QDir::currentPath() + "/window-XXXXXX");
         MainWindow w(nullptr, dir.path());
         auto provider = w.findChild<QComboBox *>("providerCombo");
@@ -47,6 +49,9 @@ class WindowTest : public QObject {
         SettingsDialog settings;
         QVERIFY(settings.findChild<QPushButton *>("chatgptLoginButton"));
         QVERIFY(settings.findChild<QComboBox *>("transcriptionMode"));
+        settings.show();
+        QTest::qWait(60);
+        QVERIFY(settings.grab().save(QDir::currentPath() + "/settings-preview.png"));
     }
     void batchesRepeatedRefreshNotifications() {
         QTemporaryDir dir(QDir::currentPath() + "/window-XXXXXX");

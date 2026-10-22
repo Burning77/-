@@ -3,6 +3,7 @@
 #include <QNetworkAccessManager>
 #include <QTcpServer>
 #include <QTimer>
+#include <QSet>
 #include <functional>
 class ChatGptAccount : public QObject {
     Q_OBJECT
@@ -38,6 +39,8 @@ class ChatGptAccount : public QObject {
     QString vault;
     quint64 loginSerial = 0;
     QHash<QString, quint64> epochs;
+    QHash<QString, quint64> credentialEpochs;
+    QSet<QString> refreshInFlight;
     QHash<QString, QList<TokenCallback>> refreshing;
     void request(QString method, QUrl url, QByteArray body, QString bearer, JsonCallback callback);
     void acceptCallback();
@@ -47,6 +50,6 @@ class ChatGptAccount : public QObject {
     QString path(QString client) const;
     QJsonObject profile(QString client) const;
     void updateProfile(QJsonObject value);
-    void invalidate(QString client);
+    void invalidate(QString client, bool discardRefresh = false);
     void revoke(QByteArray body, int attempt = 0);
 };

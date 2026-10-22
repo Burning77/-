@@ -92,6 +92,14 @@ class ChatGptTest : public QObject {
         account.selectProfile({});
         QCOMPARE(callbacks, 2);
         QVERIFY(account.activeProfile().isEmpty());
+        int resumed = 0;
+        account.selectProfile(client);
+        account.token(client, [&](QString t, QString e) {
+            QCOMPARE(t, QString("new"));
+            QVERIFY(e.isEmpty());
+            resumed++;
+        });
+        QCOMPARE(requests, 1); // returning account joins its existing rotating refresh
         post({{"access_token", "new"},
               {"refresh_token", "new-refresh"},
               {"id_token", fixture()["token"]},
@@ -100,8 +108,37 @@ class ChatGptTest : public QObject {
               {"token_type", "Bearer"}},
              {});
         QCOMPARE(SecretStore::read(secretPath(dir.path()))["refresh_token"].toString(),
-                 QString("old-refresh"));
-        QCOMPARE(requests, 1);
+                 QString("new-refresh"));
+        QCOMPARE(requests, 2);
+        QCOMPARE(resumed, 1);
+        QCOMPARE(callbacks, 2);
+    }
+    void lateRefreshCannotRestoreLoggedOutCredentials() {
+        QTemporaryDir dir;
+        QVERIFY(SecretStore::write(secretPath(dir.path()), credentials(500)));
+        ChatGptAccount account(nullptr, dir.path());
+        account.now = [] { return 1000; };
+        ChatGptAccount::JsonCallback refresh;
+        account.transport = [&](QString method, QUrl url, QByteArray, QString,
+                                ChatGptAccount::JsonCallback cb) {
+            if (url.path().endsWith("/revoke"))
+                cb({}, {});
+            else if (method == "POST")
+                refresh = cb;
+            else
+                cb(fixture()["jwks"].toObject(), {});
+        };
+        account.token(client, [&](QString, QString error) { QVERIFY(!error.isEmpty()); });
+        account.signOut(client);
+        refresh({{"access_token", "new"},
+                 {"refresh_token", "rotated"},
+                 {"id_token", fixture()["token"]},
+                 {"expires_in", 3600},
+                 {"scope", "chatgpt.tokens.use.direct"},
+                 {"token_type", "Bearer"}},
+                {});
+        QVERIFY(!QFile::exists(secretPath(dir.path())));
+        QVERIFY(account.activeProfile().isEmpty());
     }
     void refreshRotatesCredentialsForAllWaiters() {
         QTemporaryDir dir;

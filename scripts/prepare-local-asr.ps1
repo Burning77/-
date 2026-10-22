@@ -15,4 +15,6 @@ foreach($asset in $assets){
 }
 $license=Join-Path $dependency 'VOSK-LICENSE.txt'
 if(!(Test-Path -LiteralPath $license)){Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/alphacep/vosk-api/v0.3.45/COPYING' -OutFile $license}
+$blasLicense=Join-Path $dependency 'OPENBLAS-LICENSE.txt'
+if(!(Test-Path -LiteralPath $blasLicense)){Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/OpenMathLib/OpenBLAS/v0.3.13/LICENSE' -OutFile $blasLicense}
 Write-Output ('Local ASR dependencies ready: '+$dependency)

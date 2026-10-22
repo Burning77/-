@@ -36,17 +36,37 @@ void LocalTranscriber::connectSession(QString sid, QString ch, QString model, QS
     auto w = new LocalWorker(sid, ch, model, library);
     worker = w;
     connect(w, &LocalWorker::text, this, [this, epoch](QJsonObject row) {
-        if (epoch == generation)
+        if (epoch == generation) {
+            if (row["final"].toBool())
+                finalizedEnd = qMax(finalizedEnd, row["endMs"].toInteger());
             emit segmentChanged(row);
+        }
     });
     connect(w, &LocalWorker::message, this, [this, epoch, ch](QString message) {
         if (epoch == generation)
             emit status(ch, message);
     });
+    connect(w, &LocalWorker::failure, this, [this, epoch, ch](QString message) {
+        if (epoch != generation)
+            return;
+        engineFailed = true;
+        if (submittedStart >= 0)
+            emit gap(ch, qMax(submittedStart, finalizedEnd), submittedEnd);
+        emit failed(ch, message);
+    });
     connect(w, &QThread::finished, w, &QObject::deleteLater);
     w->start();
 }
 void LocalTranscriber::appendAudio(const QByteArray &pcm, qint64 start) {
+    if (pcm.isEmpty())
+        return;
+    if (submittedStart < 0)
+        submittedStart = start;
+    submittedEnd = start + pcm.size() / 48;
+    if (engineFailed) {
+        emit gap(channel, start, submittedEnd);
+        return;
+    }
     if (!worker)
         return;
     auto lost = worker->append(pcm, start);
@@ -59,6 +79,9 @@ void LocalTranscriber::finish(bool closeInput) {
 }
 void LocalTranscriber::stop() {
     generation++;
+    engineFailed = false;
+    submittedStart = -1;
+    submittedEnd = finalizedEnd = 0;
     if (worker) {
         auto w = worker.data();
         worker = nullptr;

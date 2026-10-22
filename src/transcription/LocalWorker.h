@@ -16,6 +16,7 @@ class LocalWorker : public QThread {
   signals:
     void text(QJsonObject row);
     void message(QString text);
+    void failure(QString text);
 
   protected:
     void run() override;

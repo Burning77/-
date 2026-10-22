@@ -18,6 +18,7 @@ New-Item -ItemType Directory -Path $asr -Force|Out-Null
 Copy-Item -LiteralPath (Join-Path $root '.deps/local-asr/vosk-win64-0.3.45/libvosk.dll') -Destination $asr -Force
 Copy-Item -LiteralPath (Join-Path $root '.deps/local-asr/vosk-model-small-cn-0.22') -Destination (Join-Path $asr 'model') -Recurse -Force
 Copy-Item -LiteralPath (Join-Path $root '.deps/local-asr/VOSK-LICENSE.txt') -Destination $asr -Force
+Copy-Item -LiteralPath (Join-Path $root '.deps/local-asr/OPENBLAS-LICENSE.txt') -Destination $asr -Force
 Copy-Item -LiteralPath (Join-Path $root 'THIRD_PARTY.md') -Destination $stage -Force
 $destination=Join-Path $root 'dist'
 New-Item -ItemType Directory -Path $destination -Force|Out-Null

@@ -62,7 +62,7 @@ SettingsDialog::SettingsDialog(QWidget *p) : QDialog(p), client(this) {
     connect(logout, &QPushButton::clicked, this,
             [this] { ChatGptAccount::shared().signOut(accounts->currentData().toString()); });
     connect(usage, &QPushButton::clicked, this,
-            [] { QDesktopServices::openUrl(QUrl("https://chatgpt.com/#settings/Usage")); });
+            [] { QDesktopServices::openUrl(QUrl("https://chatgpt.com/settings/usage")); });
     connect(accounts, &QComboBox::currentIndexChanged, this,
             [this] { ChatGptAccount::shared().selectProfile(accounts->currentData().toString()); });
     connect(modelRefresh, &QPushButton::clicked, this, &SettingsDialog::loadPlanModels);

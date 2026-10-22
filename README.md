@@ -15,6 +15,8 @@ ChatGPT 套餐授权与 OpenAI API Key 是两条独立路径；此版本通过�
 
 支持保存多个账户/工作区注册，切换后取消旧账户的活动请求；退出会删除本地凭据并尝试远端撤销。OAuth 凭据经 Windows DPAPI 加密后原子保存，注册映射保留用于再次登录。本地识别不上传音频，提取问题、生成回答及复盘会将必要文本发给所选服务。可切换回云端转写；ChatGPT 套餐登录不用于语音 API。
 
+同一 Windows 用户仅运行一个新版实例，以避免多个进程同时轮换登录凭据。识别引擎缺失或失败时会保留录音，并把识别问题及缺失区间写入会话，便于复盘时识别证据缺口。
+
 官方协议依据：[登录接入](https://developers.openai.com/siwc/token-sharing-open-source/sign-in)、[模型与推理](https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference)、[预览限制](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations)。本地组件许可见 [THIRD_PARTY.md](THIRD_PARTY.md)。
 
 ## 0.1.2 连接诊断修复

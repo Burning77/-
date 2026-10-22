@@ -25,9 +25,12 @@ class LocalTranscriber : public QObject {
     void segmentChanged(QJsonObject);
     void status(QString channel, QString message);
     void gap(QString channel, qint64 start, qint64 end);
+    void failed(QString channel, QString reason);
 
   private:
     QPointer<LocalWorker> worker;
     quint64 generation = 0;
     QString channel;
+    bool engineFailed = false;
+    qint64 submittedStart = -1, submittedEnd = 0, finalizedEnd = 0;
 };

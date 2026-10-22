@@ -81,6 +81,10 @@ SessionController::SessionController(QString root, QObject *p)
         connect(t, &LocalTranscriber::segmentChanged, this, &SessionController::acceptSegment);
         connect(t, &LocalTranscriber::status, this, &SessionController::transcriptionStatus);
         connect(t, &LocalTranscriber::gap, this, &SessionController::recordGap);
+        connect(t, &LocalTranscriber::failed, this, [this](QString ch, QString error) {
+            if (live)
+                transcriptionIssues.append(ch + ": " + error);
+        });
     }
 }
 SessionController::~SessionController() {
@@ -410,6 +414,7 @@ void SessionController::startRecording(QString sid, QString remoteId, QByteArray
     pauseState = false;
     stoppingState = false;
     audioIssues.clear();
+    transcriptionIssues.clear();
     pauseStarted = 0;
     auto s = get("sessions", sid, sid);
     s["state"] = "recording";
@@ -477,7 +482,7 @@ void SessionController::finishNow() {
     if (!live || !stoppingState)
         return;
     flushGaps();
-    bool incomplete = false;
+    bool incomplete = !transcriptionIssues.isEmpty();
     for (auto ch : QStringList{"remote", "microphone"}) {
         bool pending = usingLocalAsr ? (ch == "remote" ? localRemote.hasUnfinishedAudio()
                                                        : localMic.hasUnfinishedAudio())
@@ -517,6 +522,7 @@ void SessionController::finishNow() {
     s["durationMs"] = clock.elapsed();
     s["transcriptIncomplete"] = incomplete;
     s["audioIssues"] = QJsonArray::fromStringList(audioIssues);
+    s["transcriptionIssues"] = QJsonArray::fromStringList(transcriptionIssues);
     persist("sessions", s);
     live = false;
     pauseState = false;

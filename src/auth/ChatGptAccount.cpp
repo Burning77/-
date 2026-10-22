@@ -65,8 +65,12 @@ QString ChatGptAccount::path(QString client) const {
                QCryptographicHash::hash(client.toUtf8(), QCryptographicHash::Sha256).toHex()) +
            ".dpapi";
 }
-void ChatGptAccount::invalidate(QString client) {
+void ChatGptAccount::invalidate(QString client, bool discardRefresh) {
     epochs[client]++;
+    if (discardRefresh) {
+        credentialEpochs[client]++;
+        refreshInFlight.remove(client);
+    }
     auto callbacks = refreshing.take(client);
     for (auto cb : callbacks)
         cb({}, QStringLiteral("账户状态已改变，请重新提交"));
@@ -79,9 +83,9 @@ void ChatGptAccount::selectProfile(QString client) {
     if (old == client)
         return;
     cancelLogin();
+    QSettings().setValue("chatgpt/active", client);
     if (!old.isEmpty())
         invalidate(old);
-    QSettings().setValue("chatgpt/active", client);
     emit changed();
 }
 void ChatGptAccount::cancelLogin() {
@@ -242,9 +246,9 @@ void ChatGptAccount::exchange(QString code, QString client, quint64 serial) {
                                              return;
                                          }
                                          auto old = activeProfile();
+                                         QSettings().setValue("chatgpt/active", client);
                                          if (old != client && !old.isEmpty())
                                              invalidate(old);
-                                         QSettings().setValue("chatgpt/active", client);
                                          attempt = {};
                                          emit changed();
                                          emit status(
@@ -277,6 +281,8 @@ void ChatGptAccount::saveTokens(QString client, QJsonObject tokens, QJsonObject 
         done({}, QStringLiteral("Windows 本地凭据保护保存失败"));
         return;
     }
+    if (!refreshingFlag)
+        invalidate(client, true);
     old["clientId"] = client;
     old["sub"] = claims["sub"];
     old["label"] = claims["email"].toString(claims["sub"].toString().left(12));
@@ -308,17 +314,19 @@ void ChatGptAccount::token(QString client, TokenCallback done) {
         return;
     }
     refreshing[client].append(done);
-    if (refreshing[client].size() > 1)
+    if (refreshInFlight.contains(client))
         return;
-    auto epoch = epochs.value(client);
+    refreshInFlight.insert(client);
+    auto epoch = credentialEpochs.value(client);
     QUrlQuery form;
     form.addQueryItem("grant_type", "refresh_token");
     form.addQueryItem("client_id", client);
     form.addQueryItem("refresh_token", credentials["refresh_token"].toString());
     form.addQueryItem("resource", "https://api.openai.com/v1");
     auto finish = [this, client, epoch](QString token, QString error) {
-        if (epoch != epochs.value(client))
+        if (epoch != credentialEpochs.value(client))
             return;
+        refreshInFlight.remove(client);
         auto callbacks = refreshing.take(client);
         for (auto cb : callbacks)
             cb(token, error);
@@ -326,7 +334,7 @@ void ChatGptAccount::token(QString client, TokenCallback done) {
     transport("POST", QUrl("https://auth.openai.com/api/accounts/oauth/token"),
               form.query(QUrl::FullyEncoded).toUtf8(), {},
               [this, client, epoch, finish](QJsonObject tokens, QString error) {
-                  if (epoch != epochs.value(client))
+                  if (epoch != credentialEpochs.value(client))
                       return;
                   if (!error.isEmpty()) {
                       finish({}, error);
@@ -334,7 +342,7 @@ void ChatGptAccount::token(QString client, TokenCallback done) {
                   }
                   transport("GET", QUrl("https://auth.openai.com/.well-known/jwks.json"), {}, {},
                             [this, client, epoch, tokens, finish](QJsonObject jwks, QString error) {
-                                if (epoch != epochs.value(client))
+                                if (epoch != credentialEpochs.value(client))
                                     return;
                                 QString validation;
                                 auto claims = OAuthProtocol::verifyIdToken(
@@ -376,7 +384,9 @@ void ChatGptAccount::signOut(QString client) {
     if (client.isEmpty() || profile(client).isEmpty())
         return;
     cancelLogin();
-    invalidate(client);
+    if (activeProfile() == client)
+        QSettings().setValue("chatgpt/active", QString());
+    invalidate(client, true);
     auto credentials = SecretStore::read(path(client));
     bool cleared = !QFile::exists(path(client)) || QFile::remove(path(client));
     if (!cleared) {
