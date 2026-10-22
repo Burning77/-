@@ -2,8 +2,38 @@
 #include "SseParser.h"
 #include "app/CredentialStore.h"
 #include <QJsonDocument>
+#include <QRegularExpression>
 #include <QTimer>
 #include <memory>
+namespace {
+QString safeDiagnostic(QString text, const QString &key) {
+    if (!key.isEmpty())
+        text.replace(key, QStringLiteral("[密钥已隐藏]"));
+    text.replace(QRegularExpression("Bearer\\s+[^\\s,;\"']+", QRegularExpression::CaseInsensitiveOption),
+                 QStringLiteral("Bearer [密钥已隐藏]"));
+    text.replace(QRegularExpression("sk-[A-Za-z0-9_-]+"), QStringLiteral("[密钥已隐藏]"));
+    text.replace(QRegularExpression("[\\x00-\\x1f\\x7f]"), " ");
+    return text.simplified().left(600);
+}
+QString serviceError(const QString &provider, int status, const QJsonValue &value, const QString &key) {
+    const auto object = value.toObject();
+    QStringList details;
+    for (const auto &field : {QString("code"), QString("type")}) {
+        const auto v = object.value(field);
+        auto detail = v.isString() ? v.toString() : v.isDouble() ? QString::number(v.toDouble()) : QString();
+        if (!detail.isEmpty() && !details.contains(detail))
+            details.append(detail);
+    }
+    auto message = value.isString() ? value.toString() : object.value("message").toString();
+    if (!message.isEmpty())
+        details.append(message);
+    if (details.isEmpty())
+        details.append(QStringLiteral("服务未提供 JSON 错误详情，请检查地址、权限和网络"));
+    auto prefix = status > 0 ? QStringLiteral("%1 请求失败（HTTP %2）：").arg(provider).arg(status)
+                             : QStringLiteral("%1 请求失败：").arg(provider);
+    return prefix + safeDiagnostic(details.join(" | "), key);
+}
+} // namespace
 TextClient::TextClient(QObject *p) : QObject(p), manager(this) {
     keyReader = CredentialStore::read;
 }
@@ -54,10 +84,11 @@ QString TextClient::start(const TextRequest &r) {
         SseParser parser;
         bool terminal = false, ok = false;
         QString error;
+        QByteArray errorBody;
         qint64 bytes = 0;
     };
     auto state = std::make_shared<State>();
-    auto consume = [this, reply, r, state] {
+    auto consume = [this, reply, r, state, key] {
         auto bytes = reply->readAll();
         state->bytes += bytes.size();
         if (state->bytes > 8 * 1024 * 1024) {
@@ -65,8 +96,10 @@ QString TextClient::start(const TextRequest &r) {
             reply->abort();
             return;
         }
-        if (reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() != 200)
+        if (reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() != 200) {
+            state->errorBody += bytes.left(qMax(0, 65536 - int(state->errorBody.size())));
             return;
+        }
         for (const auto &e : state->parser.feed(bytes)) {
             if (state->terminal)
                 continue;
@@ -83,8 +116,11 @@ QString TextClient::start(const TextRequest &r) {
             }
             auto o = doc.object();
             auto type = o["type"].toString(e.event);
-            if (o.contains("error")) {
-                state->error = QStringLiteral("模型服务返回错误，请检查模型、额度和 API 配置");
+            if (type == "error" || o.value("error").isObject() || o.value("error").isString()) {
+                const auto detail = o.value("error");
+                state->error =
+                    serviceError(r.config.provider, 200,
+                                 detail.isObject() || detail.isString() ? detail : QJsonValue(o), key);
                 state->terminal = true;
                 continue;
             }
@@ -108,20 +144,32 @@ QString TextClient::start(const TextRequest &r) {
                 }
                 if (type == "response.failed" || type == "response.incomplete") {
                     state->terminal = true;
-                    state->error = QStringLiteral("模型输出未完成，请重试");
+                    auto response = o.value("response").toObject();
+                    auto detail = response.value("error");
+                    if (detail.isNull() || detail.isUndefined())
+                        detail = QJsonObject{
+                            {"code", response.value("incomplete_details").toObject().value("reason")},
+                            {"message", QStringLiteral("模型输出未完成，请检查返回原因后重试")}};
+                    state->error = serviceError(r.config.provider, 200, detail, key);
                 }
             }
         }
     };
     connect(reply, &QNetworkReply::readyRead, this, consume);
-    connect(reply, &QNetworkReply::finished, this, [this, reply, r, state, consume] {
+    connect(reply, &QNetworkReply::finished, this, [this, reply, r, state, consume, key] {
         consume();
         replies.remove(r.id);
         int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-        if (status != 200)
-            emit failed(r.id, QStringLiteral("%1 请求失败（HTTP %2），请检查网络、模型和额度")
-                                  .arg(r.config.provider)
-                                  .arg(status));
+        if (status != 200) {
+            auto body = QJsonDocument::fromJson(state->errorBody).object();
+            QJsonValue detail = body.value("error");
+            if (detail.isUndefined() || detail.isNull())
+                detail = body;
+            if (!status && detail.toObject().isEmpty())
+                detail = QJsonObject{{"code", "network_error"}, {"message", reply->errorString()}};
+            emit failed(r.id, serviceError(r.config.provider, status, detail, key));
+        } else if (!state->error.isEmpty())
+            emit failed(r.id, state->error);
         else if (reply->error() != QNetworkReply::NoError)
             emit failed(r.id, QStringLiteral("网络中断、超时或请求已取消"));
         else if (!state->terminal || !state->ok)

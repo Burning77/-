@@ -56,6 +56,9 @@ class SessionTest : public QObject {
         QCoreApplication::setApplicationName("SessionRegression");
         QSettings::setDefaultFormat(QSettings::IniFormat);
         QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, settings.path());
+        ProviderConfig transcription;
+        transcription.baseUrl = "invalid://test-disabled";
+        AppSettings().saveTranscription(transcription);
     }
     void extractsFinalPendingSpeechAfterRecordingEnds() {
         QTcpServer server;
@@ -167,6 +170,7 @@ class SessionTest : public QObject {
     void cancelsRunningAndQueuedAnswersTogether() {
         QTemporaryDir d(QDir::currentPath() + "/cancel-XXXXXX");
         SessionController c(d.path());
+        c.client.keyReader = [](const QString &) { return QString(); };
         auto s = c.createSession("A", "", "");
         ProviderConfig config;
         config.model = "test";

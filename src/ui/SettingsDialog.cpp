@@ -31,6 +31,7 @@ SettingsDialog::SettingsDialog(QWidget *p) : QDialog(p), client(this) {
                                       : QStringLiteral("已保存；留空保留现有密钥"));
         f.model->setPlaceholderText(QStringLiteral("填写账户可用的 API 模型 ID"));
         f.result->setWordWrap(true);
+        f.result->setTextFormat(Qt::PlainText);
         form->addRow(QStringLiteral("API 地址"), f.url);
         form->addRow(QStringLiteral("模型名称"), f.model);
         form->addRow("API Key", f.key);

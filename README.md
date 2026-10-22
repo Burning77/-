@@ -2,6 +2,14 @@
 
 Windows 桌面面试记录工具：双路录音、实时中文转写、问题提取、OpenAI GPT / DeepSeek 流式参考回答、面试复盘和 Markdown 导出。
 
+## 0.1.2 连接诊断修复
+
+模型测试失败时显示 HTTP 状态、服务错误码、类型和简短说明，支持 JSON 及流式错误，密钥会先脱敏。`error: null` 不再被误判为服务失败。HTTP 错误正文最多缓存 64 KiB，非 JSON 网关页面不直接显示。
+
+运行包：`dist/InterviewAssistant-0.1.2`。进入设置重新测试，将具体错误码作为排查依据；“已保存”只表示本地保存了密钥，不代表服务验证成功。
+
+实时对话还需要单独配置“语音转写”页并通过测试。文本服务使用模型 API ID，例如 `gpt-6.1-sol`；语音页默认使用 `gpt-live-transcribe` 和 `wss://api.openai.com/v1/realtime?intent=transcription`。官方 OpenAI Key 可在对应权限允许时分别填写到两页，程序按服务和地址独立保存。
+
 ## 0.1.1 卡顿修复
 
 - 未配置语音转写服务时只进行本地录音，显示“仅本地录音”，不缓存音频或反复生成缺失提示。
