@@ -89,3 +89,11 @@ Release 构建通过，CTest 14/14、QtTest 89 项通过，无失败或跳过。
 ## 0.2.1 启动居中（2026-10-22）
 
 原代码只设置大小，未指定初始屏幕或位置。新增首次显示时选择主屏幕，再以 QWindow 原生边框几何在 availableGeometry 内居中；以后隐藏/显示保留手动位置。回归先失败后通过；首次 QWidget 边框缓存存在2像素延迟，改用原生窗口 frameGeometry/setFramePosition 后消除。Release 目标构建与窗口测试9/9通过，无失败或跳过。测试使用Qt offscreen平台，用户实际多屏/DPI组合未现场测量。独立0.2.1包保留本地模型；未停止或覆盖用户旧版进程。
+
+## 0.2.2 ChatGPT 提取 JSON 模式（2026-10-22）
+
+用户真实请求返回 HTTP400 invalid_request_error，要求 input 消息包含 json；提取规则已在 instructions 中，但转换后的 input 只有原始转写。新增显式 developer JSON 输出提示，原始对话、JSON 格式及来源校验不变。真实提取 payload 的输入不变量测试先失败再通过。Release CTest14/14、QtTest91项通过，无失败或跳过。
+
+通过单独的忽略目录工具复用实际 Qt TextClient、InterviewLogic 和本软件已授权的未过期凭据，对一条合成问题完成真实 ChatGPT 套餐请求，返回1个问题、JSON解析及来源校验通过（进程退出0，build-release/live-json-result.json）。未刷新凭据，未发送用户录音或实际对话。早先 Python 独立联网测试在TLS握手时EOF；Qt真实请求链路随后验证通过。
+
+0.2.2独立压缩包 SHA256 24013F95F6CAB901DF7E983AC48874BC2B781DEA4D68D431C0935D4A62A45479。用户当前旧版进程保持不动，保存会话后手动切换新版。

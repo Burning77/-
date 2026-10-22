@@ -1,4 +1,5 @@
 #include "ai/TextClient.h"
+#include "ai/InterviewLogic.h"
 #include <QSignalSpy>
 #include <QTcpServer>
 #include <QTcpSocket>
@@ -6,6 +7,34 @@
 class TextClientTest : public QObject {
     Q_OBJECT
   private slots:
+    void chatGptExtractionDeclaresJsonInInputMessages() {
+        ProviderConfig config;
+        config.provider = "ChatGPT";
+        config.model = "account-model";
+        const QJsonObject session{{"id", "session"}};
+        const QJsonObject speech{{"id", "speech"},
+                                 {"sessionId", "session"},
+                                 {"channel", "remote"},
+                                 {"final", true},
+                                 {"text", QStringLiteral("请介绍一下你的项目经历")}};
+        auto request = InterviewLogic::extraction(session, {speech}, config);
+        auto payload = TextClient::payload(request);
+        QCOMPARE(payload["text"].toObject()["format"].toObject()["type"].toString(), QString("json_object"));
+        QVERIFY(payload["instructions"].toString().contains("JSON"));
+        QStringList inputText;
+        bool sourcePreserved = false;
+        for (auto value : payload["input"].toArray()) {
+            const auto message = value.toObject();
+            inputText.append(message["content"].toString());
+            if (message["role"] == "user")
+                sourcePreserved |= message["content"].toString().contains(speech["text"].toString());
+            QVERIFY(message["role"] != "system");
+        }
+        QVERIFY2(inputText.join('\n').contains("json", Qt::CaseInsensitive),
+                 "JSON mode admission requires an explicit JSON instruction in input, not only instructions");
+        QVERIFY(sourcePreserved);
+        QCOMPARE(payload["store"].toBool(true), false);
+    }
     void chatGptPlanPayloadUsesInstructionsAndNoStore() {
         TextRequest r;
         r.config.provider = "ChatGPT";

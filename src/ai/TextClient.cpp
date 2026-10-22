@@ -62,6 +62,10 @@ QJsonObject TextClient::payload(const TextRequest &r) {
                 else
                     input.append(message);
             }
+            if (r.jsonMode)
+                input.prepend(QJsonObject{
+                    {"role", "developer"},
+                    {"content", "Return a JSON object following the schema and rules in the instructions."}});
             o["input"] = input;
             o["store"] = false;
             if (!instructions.isEmpty())
