@@ -7,6 +7,9 @@
 #include <QJsonDocument>
 #include <QRegularExpression>
 #include <QTimer>
+#include <QSslError>
+#include <QSslConfiguration>
+#include <QSslCipher>
 #include <memory>
 namespace {
 QString safeDiagnostic(QString text, const QString &key) {
@@ -164,7 +167,7 @@ QString TextClient::start(const TextRequest &r) {
     }
     return begin(r, keyReader(r.config.credentialId()));
 }
-QString TextClient::begin(const TextRequest &r, const QString &key) {
+QString TextClient::begin(const TextRequest &r, const QString &key, int retry) {
     auto reject = [this, r](QString message) {
         QTimer::singleShot(0, this, [this, r, message] {
             profileRequests.remove(r.id);
@@ -206,11 +209,20 @@ QString TextClient::begin(const TextRequest &r, const QString &key) {
     struct State {
         SseParser parser;
         bool terminal = false, ok = false;
+        bool connecting = false, encrypted = false, sent = false, sslError = false;
         QString error, stopReason;
         QByteArray errorBody;
         qint64 bytes = 0;
     };
     auto state = std::make_shared<State>();
+    const auto origin = url.adjusted(QUrl::RemovePath | QUrl::RemoveQuery | QUrl::RemoveFragment).toString();
+    connect(reply, &QNetworkReply::socketStartedConnecting, this, [state] { state->connecting = true; });
+    connect(reply, &QNetworkReply::encrypted, this, [this, state, origin] {
+        state->encrypted = true;
+        establishedTlsOrigins.insert(origin);
+    });
+    connect(reply, &QNetworkReply::requestSent, this, [state] { state->sent = true; });
+    connect(reply, &QNetworkReply::sslErrors, this, [state] { state->sslError = true; });
     auto consume = [this, reply, r, state, key] {
         auto bytes = reply->readAll();
         state->bytes += bytes.size();
@@ -292,11 +304,35 @@ QString TextClient::begin(const TextRequest &r, const QString &key) {
         }
     };
     connect(reply, &QNetworkReply::readyRead, this, consume);
-    connect(reply, &QNetworkReply::finished, this, [this, reply, r, state, consume, key] {
+    connect(reply, &QNetworkReply::finished, this, [this, reply, r, state, consume, key, retry, origin] {
         consume();
         replies.remove(r.id);
-        profileRequests.remove(r.id);
         int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        // Never replay a possibly accepted POST. A fresh connection that closed
+        // before TLS and before requestSent is the only retryable inference case.
+        // encrypted() is not guaranteed on pooled connections, so an origin that
+        // has ever completed TLS on this manager is conservatively excluded.
+        const bool beforeTls = state->connecting && !state->encrypted && !state->sent && !state->sslError &&
+                               !establishedTlsOrigins.contains(origin) &&
+                               reply->sslConfiguration().sessionCipher().isNull() &&
+                               !reply->attribute(QNetworkRequest::ConnectionEncryptedAttribute).toBool();
+        if (r.config.provider == "DeepSeek" && !status && state->bytes == 0 && state->error.isEmpty() &&
+            beforeTls && reply->error() == QNetworkReply::RemoteHostClosedError && retry < 2) {
+            pendingRetry.insert(r.id);
+            reply->deleteLater();
+            QTimer::singleShot(retry == 0 ? 250 : 750, this, [this, r, key, retry] {
+                if (!pendingRetry.remove(r.id))
+                    return;
+                if (r.config.accountLogin && (!account || account->sessionId() != r.config.accountId)) {
+                    profileRequests.remove(r.id);
+                    emit failed(r.id, QStringLiteral("DeepSeek 账号已更改，本次连接重试已停止"));
+                    return;
+                }
+                begin(r, key, retry + 1);
+            });
+            return;
+        }
+        profileRequests.remove(r.id);
         if (status != 200) {
             auto body = QJsonDocument::fromJson(state->errorBody).object();
             QJsonValue detail = body.value("error");
@@ -304,7 +340,10 @@ QString TextClient::begin(const TextRequest &r, const QString &key) {
                 detail = body;
             if (!status && detail.toObject().isEmpty())
                 detail = QJsonObject{{"code", "network_error"}, {"message", reply->errorString()}};
-            emit failed(r.id, serviceError(r.config.provider, status, detail, key));
+            auto error = serviceError(r.config.provider, status, detail, key);
+            if (retry)
+                error += QStringLiteral("（已自动重试 %1 次）").arg(retry);
+            emit failed(r.id, error);
         } else if (!state->error.isEmpty())
             emit failed(r.id, state->error);
         else if (reply->error() != QNetworkReply::NoError)
@@ -321,6 +360,11 @@ QString TextClient::begin(const TextRequest &r, const QString &key) {
     return r.id;
 }
 void TextClient::cancel(const QString &id) {
+    if (pendingRetry.remove(id)) {
+        profileRequests.remove(id);
+        emit failed(id, QStringLiteral("用户已取消连接重试"));
+        return;
+    }
     if (pendingAuth.remove(id)) {
         profileRequests.remove(id);
         emit failed(id, QStringLiteral("用户已取消等待授权"));

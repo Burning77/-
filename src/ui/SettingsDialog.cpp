@@ -253,7 +253,8 @@ void SettingsDialog::loadDeepSeekModels() {
         deepSeekStatus->setText(QStringLiteral("请先登录 DeepSeek 账号"));
         return;
     }
-    deepSeekStatus->setText(QStringLiteral("正在读取账号可用模型…"));
+    deepSeekStatus->setText(
+        QStringLiteral("DeepSeek 账号已登录；正在读取可用模型（连接关闭时最多自动重试两次）…"));
     QPointer<SettingsDialog> guard(this);
     DeepSeekAccount::shared().models([guard, session](QJsonObject result, QString error) {
         if (!guard || session != DeepSeekAccount::shared().sessionId())

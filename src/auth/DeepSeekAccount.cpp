@@ -66,7 +66,8 @@ struct DeepSeekAccount::State {
                    : QJsonObject{};
     }
     void request(QString method, QUrl url, QJsonObject body, QString token, JsonCallback done,
-                 QList<QPair<QByteArray, QByteArray>> meta = {}) {
+                 QList<QPair<QByteArray, QByteArray>> meta = {}, int retry = 0,
+                 QString expectedSession = {}) {
         if (!official(url, platform) && !official(url, api)) {
             done({}, QStringLiteral("DeepSeek 授权仅可访问官方地址"));
             return;
@@ -75,6 +76,9 @@ struct DeepSeekAccount::State {
             owner->transport(method, url, body, token, std::move(done));
             return;
         }
+        const bool listing = method == "GET" && url == QUrl(api + "/models") && !token.isEmpty();
+        if (listing && retry == 0)
+            expectedSession = owner->sessionId();
         QNetworkRequest request(url);
         request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::ManualRedirectPolicy);
         request.setTransferTimeout(30000);
@@ -93,7 +97,11 @@ struct DeepSeekAccount::State {
             request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
             bytes = QJsonDocument(body).toJson(QJsonDocument::Compact);
         }
-        auto reply = method == "GET" ? network.get(request) : network.post(request, bytes);
+        auto reply = owner->sendRequest ? owner->sendRequest(method, request, bytes)
+                     : method == "GET"  ? network.get(request)
+                                        : network.post(request, bytes);
+        if (owner->sendRequest)
+            reply->setParent(&network);
         QTimer::singleShot(30000, reply, [reply] {
             if (!reply->isFinished())
                 reply->abort();
@@ -112,9 +120,28 @@ struct DeepSeekAccount::State {
         QObject::connect(reply, &QNetworkReply::readyRead, owner, read);
         QObject::connect(
             reply, &QNetworkReply::finished, owner,
-            [reply, result, tooLarge, read, token, done = std::move(done)] {
+            [this, reply, result, tooLarge, read, method, url, body, token, meta, listing, retry,
+             expectedSession, done = std::move(done)]() mutable {
                 read();
                 auto status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+                // Only this idempotent GET may be retried. Never replay authorization
+                // exchanges, inference POSTs, HTTP errors or certificate failures.
+                if (listing && !*tooLarge && !status &&
+                    reply->error() == QNetworkReply::RemoteHostClosedError && retry < 2) {
+                    reply->deleteLater();
+                    QTimer::singleShot(
+                        retry == 0 ? 250 : 750, owner,
+                        [this, method, url, body, token, meta, retry, expectedSession,
+                         done = std::move(done)]() mutable {
+                            if (expectedSession.isEmpty() || owner->sessionId() != expectedSession) {
+                                done({}, QStringLiteral("DeepSeek 账号已更改，本次模型读取已停止"));
+                                return;
+                            }
+                            this->request(method, url, body, token, std::move(done), meta, retry + 1,
+                                          expectedSession);
+                        });
+                    return;
+                }
                 QString error;
                 QJsonParseError parse;
                 auto document = QJsonDocument::fromJson(*result, &parse);
@@ -136,6 +163,8 @@ struct DeepSeekAccount::State {
                                       .arg(detail);
                 } else if (parse.error != QJsonParseError::NoError || !document.isObject())
                     error = QStringLiteral("DeepSeek 返回无效 JSON");
+                if (!error.isEmpty() && retry)
+                    error += QStringLiteral("（已自动重试 %1 次）").arg(retry);
                 reply->deleteLater();
                 done(document.object(), error);
             });

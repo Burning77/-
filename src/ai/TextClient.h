@@ -27,5 +27,7 @@ class TextClient : public QObject {
     QHash<QString, QNetworkReply *> replies;
     QHash<QString, QString> profileRequests;
     QSet<QString> pendingAuth;
-    QString begin(const TextRequest &, const QString &key);
+    QSet<QString> pendingRetry;
+    QSet<QString> establishedTlsOrigins;
+    QString begin(const TextRequest &, const QString &key, int retry = 0);
 };

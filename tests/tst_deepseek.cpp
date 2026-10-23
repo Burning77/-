@@ -8,6 +8,7 @@
 #include <QNetworkProxyFactory>
 #include <QScopeGuard>
 #include <QSslSocket>
+#include <QSslError>
 #include <QStandardPaths>
 #include <QTcpServer>
 #include <QFile>
@@ -25,17 +26,28 @@ class FixtureReply : public QNetworkReply {
     bool ended = false;
 
   public:
-    FixtureReply(QNetworkRequest request, QByteArray bytes, int status, QObject *parent)
+    FixtureReply(QNetworkRequest request, QByteArray bytes, int status, QObject *parent,
+                 QNetworkReply::NetworkError transportError = QNetworkReply::NoError, int phase = 0)
         : QNetworkReply(parent), body(bytes) {
         setRequest(request);
         setUrl(request.url());
         setAttribute(QNetworkRequest::HttpStatusCodeAttribute, status);
         open(QIODevice::ReadOnly | QIODevice::Unbuffered);
-        if (status != 200)
+        if (transportError != QNetworkReply::NoError)
+            setError(transportError, "Fixture connection closed");
+        else if (status != 200)
             setError(QNetworkReply::ContentAccessDenied, "Fixture error");
-        QTimer::singleShot(0, this, [this] {
+        QTimer::singleShot(0, this, [this, phase] {
             if (ended)
                 return;
+            if (phase & 1)
+                emit socketStartedConnecting();
+            if (phase & 2)
+                emit encrypted();
+            if (phase & 4)
+                emit requestSent();
+            if (phase & 8)
+                emit sslErrors({QSslError(QSslError::CertificateUntrusted)});
             emit readyRead();
             ended = true;
             setFinished(true);
@@ -187,6 +199,242 @@ class DeepSeekTest : public QObject {
         QVERIFY(error.contains(QStringLiteral("网络")));
         QVERIFY(error.contains("api.deepseek.com"));
         QVERIFY(!error.contains("fixture-token"));
+    }
+    void catalogueRecoversAfterTwoClosedConnections() {
+        QTemporaryDir dir;
+        DeepSeekAccount account(nullptr, dir.path());
+        signIn(account);
+        account.transport = {};
+        const auto session = account.sessionId();
+        int calls = 0, completions = 0;
+        bool correctRequest = true;
+        account.sendRequest = [&](QString method, const QNetworkRequest &request, const QByteArray &body) {
+            ++calls;
+            correctRequest &= method == "GET" && body.isEmpty() &&
+                              request.url() == QUrl("https://api.deepseek.com/models") &&
+                              request.rawHeader("x-dsh-auth-token") == "fixture-token";
+            return new FixtureReply(
+                request, calls < 3 ? QByteArray() : QByteArray("{\"data\":[]}"), calls < 3 ? 0 : 200,
+                &account, calls < 3 ? QNetworkReply::RemoteHostClosedError : QNetworkReply::NoError);
+        };
+        QString error;
+        account.models([&](QJsonObject result, QString why) {
+            ++completions;
+            error = why;
+            if (why.isEmpty())
+                QVERIFY(result["data"].isArray());
+        });
+        QTRY_COMPARE_WITH_TIMEOUT(completions, 1, 3000);
+        QVERIFY2(error.isEmpty(), qPrintable(error));
+        QCOMPARE(calls, 3);
+        QVERIFY(correctRequest);
+        QCOMPARE(account.sessionId(), session);
+    }
+    void catalogueRetriesStopAfterThreeAttempts() {
+        QTemporaryDir dir;
+        DeepSeekAccount account(nullptr, dir.path());
+        signIn(account);
+        account.transport = {};
+        int calls = 0, completions = 0;
+        account.sendRequest = [&](QString, const QNetworkRequest &request, const QByteArray &) {
+            ++calls;
+            return new FixtureReply(request, {}, 0, &account, QNetworkReply::RemoteHostClosedError);
+        };
+        QString error;
+        account.models([&](QJsonObject, QString why) {
+            ++completions;
+            error = why;
+        });
+        QTRY_COMPARE_WITH_TIMEOUT(completions, 1, 3000);
+        QCOMPARE(calls, 3);
+        QVERIFY(error.contains(QStringLiteral("重试")));
+        QVERIFY(account.signedIn());
+    }
+    void catalogueDoesNotRetryServerOrCertificateErrors_data() {
+        QTest::addColumn<int>("http");
+        QTest::addColumn<int>("networkError");
+        QTest::newRow("unauthorized") << 401 << int(QNetworkReply::ContentAccessDenied);
+        QTest::newRow("server-error") << 503 << int(QNetworkReply::InternalServerError);
+        QTest::newRow("certificate") << 0 << int(QNetworkReply::SslHandshakeFailedError);
+        QTest::newRow("cancelled") << 0 << int(QNetworkReply::OperationCanceledError);
+    }
+    void catalogueDoesNotRetryServerOrCertificateErrors() {
+        QFETCH(int, http);
+        QFETCH(int, networkError);
+        QTemporaryDir dir;
+        DeepSeekAccount account(nullptr, dir.path());
+        signIn(account);
+        account.transport = {};
+        int calls = 0, completions = 0;
+        account.sendRequest = [&](QString, const QNetworkRequest &request, const QByteArray &) {
+            ++calls;
+            return new FixtureReply(request, "{}", http, &account, QNetworkReply::NetworkError(networkError));
+        };
+        account.models([&](QJsonObject, QString error) {
+            ++completions;
+            QVERIFY(!error.isEmpty());
+        });
+        QTRY_COMPARE(completions, 1);
+        QCOMPARE(calls, 1);
+        QVERIFY(account.signedIn());
+    }
+    void cataloguePendingRetryCannotResendSignedOutToken() {
+        QTemporaryDir dir;
+        DeepSeekAccount account(nullptr, dir.path());
+        signIn(account);
+        account.transport = {};
+        int calls = 0, completions = 0;
+        account.sendRequest = [&](QString method, const QNetworkRequest &request, const QByteArray &) {
+            if (method != "GET")
+                return new FixtureReply(request, QJsonDocument(envelope({})).toJson(), 200, &account);
+            ++calls;
+            auto reply = new FixtureReply(request, {}, 0, &account, QNetworkReply::RemoteHostClosedError);
+            QTimer::singleShot(0, &account, [&] { account.signOut(); });
+            return reply;
+        };
+        QString error;
+        account.models([&](QJsonObject, QString why) {
+            ++completions;
+            error = why;
+        });
+        QTRY_COMPARE_WITH_TIMEOUT(completions, 1, 3000);
+        QVERIFY(error.contains(QStringLiteral("账号已更改")));
+        QCOMPARE(calls, 1);
+        QVERIFY(!account.signedIn());
+    }
+    void inferenceRecoversOnlyBeforeSendingRequest() {
+        QTemporaryDir dir;
+        DeepSeekAccount account(nullptr, dir.path());
+        signIn(account);
+        TextClient client(nullptr, &account);
+        int calls = 0;
+        client.postRequest = [&](const QNetworkRequest &request, const QByteArray &) {
+            ++calls;
+            const QByteArray stream =
+                "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}}\n\n"
+                "data: {\"type\":\"message_stop\"}\n\n";
+            return new FixtureReply(request, calls < 3 ? QByteArray() : stream, calls < 3 ? 0 : 200, &client,
+                                    calls < 3 ? QNetworkReply::RemoteHostClosedError : QNetworkReply::NoError,
+                                    calls < 3 ? 1 : 7);
+        };
+        QSignalSpy done(&client, &TextClient::finished), failed(&client, &TextClient::failed);
+        TextRequest request;
+        request.config = {"DeepSeek", "https://api.deepseek.com", "fixture-model", account.sessionId(), true};
+        client.start(request);
+        QTRY_VERIFY_WITH_TIMEOUT(!done.isEmpty() || !failed.isEmpty(), 3000);
+        QCOMPARE(done.size(), 1);
+        QCOMPARE(failed.size(), 0);
+        QCOMPARE(calls, 3);
+        QVERIFY(account.signedIn());
+    }
+    void inferenceNeverReplaysPossiblySentRequest_data() {
+        QTest::addColumn<int>("phase");
+        QTest::addColumn<int>("http");
+        QTest::addColumn<QByteArray>("body");
+        QTest::newRow("encrypted") << 3 << 0 << QByteArray();
+        QTest::newRow("sent") << 5 << 0 << QByteArray();
+        QTest::newRow("reused-or-unknown") << 0 << 0 << QByteArray();
+        QTest::newRow("certificate-error") << 9 << 0 << QByteArray();
+        QTest::newRow("partial-answer") << 7 << 200
+                                        << QByteArray("data: "
+                                                      "{\"type\":\"content_block_delta\",\"delta\":{\"type\":"
+                                                      "\"text_delta\",\"text\":\"partial\"}}\n\n");
+        QTest::newRow("unauthorized") << 7 << 401 << QByteArray("{}");
+    }
+    void inferenceNeverReplaysPossiblySentRequest() {
+        QFETCH(int, phase);
+        QFETCH(int, http);
+        QFETCH(QByteArray, body);
+        QTemporaryDir dir;
+        DeepSeekAccount account(nullptr, dir.path());
+        signIn(account);
+        TextClient client(nullptr, &account);
+        int calls = 0;
+        client.postRequest = [&](const QNetworkRequest &request, const QByteArray &) {
+            ++calls;
+            return new FixtureReply(request, body, http, &client, QNetworkReply::RemoteHostClosedError,
+                                    phase);
+        };
+        QSignalSpy failed(&client, &TextClient::failed);
+        TextRequest request;
+        request.config = {"DeepSeek", "https://api.deepseek.com", "fixture-model", account.sessionId(), true};
+        client.start(request);
+        QTRY_COMPARE(failed.size(), 1);
+        QCOMPARE(calls, 1);
+        QCOMPARE(account.signedIn(), http != 401);
+    }
+    void inferenceDoesNotReplayOriginWithEarlierTls() {
+        QTemporaryDir dir;
+        DeepSeekAccount account(nullptr, dir.path());
+        signIn(account);
+        TextClient client(nullptr, &account);
+        int calls = 0;
+        client.postRequest = [&](const QNetworkRequest &request, const QByteArray &) {
+            ++calls;
+            return new FixtureReply(request, {}, 0, &client, QNetworkReply::RemoteHostClosedError,
+                                    calls == 1 ? 3 : 1);
+        };
+        QSignalSpy failed(&client, &TextClient::failed);
+        TextRequest request;
+        request.config = {"DeepSeek", "https://api.deepseek.com", "fixture-model", account.sessionId(), true};
+        client.start(request);
+        QTRY_COMPARE(failed.size(), 1);
+        request.id = newId();
+        client.start(request);
+        QTRY_COMPARE(failed.size(), 2);
+        QCOMPARE(calls, 2);
+    }
+    void inferenceRetryIsBounded() {
+        QTemporaryDir dir;
+        DeepSeekAccount account(nullptr, dir.path());
+        signIn(account);
+        TextClient client(nullptr, &account);
+        int calls = 0;
+        client.postRequest = [&](const QNetworkRequest &request, const QByteArray &) {
+            ++calls;
+            return new FixtureReply(request, {}, 0, &client, QNetworkReply::RemoteHostClosedError, 1);
+        };
+        QSignalSpy failed(&client, &TextClient::failed);
+        TextRequest request;
+        request.config = {"DeepSeek", "https://api.deepseek.com", "fixture-model", account.sessionId(), true};
+        client.start(request);
+        QTRY_COMPARE_WITH_TIMEOUT(failed.size(), 1, 3000);
+        QCOMPARE(calls, 3);
+        QVERIFY(failed.first()[1].toString().contains(QStringLiteral("重试")));
+    }
+    void inferenceWaitingRetryCanBeCancelled_data() {
+        QTest::addColumn<bool>("signOut");
+        QTest::newRow("cancel") << false;
+        QTest::newRow("sign-out") << true;
+    }
+    void inferenceWaitingRetryCanBeCancelled() {
+        QFETCH(bool, signOut);
+        QTemporaryDir dir;
+        DeepSeekAccount account(nullptr, dir.path());
+        signIn(account);
+        TextClient client(nullptr, &account);
+        int calls = 0;
+        bool firstFinished = false;
+        client.postRequest = [&](const QNetworkRequest &request, const QByteArray &) {
+            ++calls;
+            auto reply = new FixtureReply(request, {}, 0, &client, QNetworkReply::RemoteHostClosedError, 1);
+            connect(reply, &QNetworkReply::finished, &client, [&] { firstFinished = true; });
+            return reply;
+        };
+        QSignalSpy failed(&client, &TextClient::failed);
+        TextRequest request;
+        request.config = {"DeepSeek", "https://api.deepseek.com", "fixture-model", account.sessionId(), true};
+        client.start(request);
+        QTRY_VERIFY(firstFinished);
+        QCOMPARE(failed.size(), 0);
+        if (signOut)
+            account.signOut();
+        else
+            client.cancel(request.id);
+        QTRY_COMPARE(failed.size(), 1);
+        QTest::qWait(350);
+        QCOMPARE(calls, 1);
+        QCOMPARE(failed.size(), 1);
     }
     void signsInThroughPkceAndClearsWithoutRestoringLateResponses() {
         QTemporaryDir dir;

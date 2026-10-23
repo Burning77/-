@@ -4,6 +4,8 @@
 #include <QUrl>
 #include <functional>
 #include <memory>
+class QNetworkReply;
+class QNetworkRequest;
 class DeepSeekAccount : public QObject {
     Q_OBJECT
   public:
@@ -22,6 +24,7 @@ class DeepSeekAccount : public QObject {
     static QList<QPair<QByteArray, QByteArray>> headers();
     std::function<bool(QUrl)> openBrowser;
     std::function<void(QString, QUrl, QJsonObject, QString, JsonCallback)> transport;
+    std::function<QNetworkReply *(QString, const QNetworkRequest &, const QByteArray &)> sendRequest;
   signals:
     void changed();
     void status(QString);
