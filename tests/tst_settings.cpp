@@ -4,6 +4,20 @@
 class SettingsTest : public QObject {
     Q_OBJECT
   private slots:
+    void localDefaultUpgradesChineseOnlyModelButKeepsNewCustomPath() {
+        QTemporaryDir dir;
+        QSettings::setDefaultFormat(QSettings::IniFormat);
+        QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, dir.path());
+        QCoreApplication::setOrganizationName("InterviewTests");
+        QCoreApplication::setApplicationName("AsrMigration");
+        QSettings().setValue("transcription/localModel", "old-package/local-asr/model");
+        AppSettings a;
+        QVERIFY(a.localModelPath().endsWith("/local-asr/bilingual"));
+        a.saveLocalTranscription("Local", "custom-bilingual-model");
+        QCOMPARE(a.localModelPath(), QString("custom-bilingual-model"));
+        QCOMPARE(QSettings().value("transcription/localModel").toString(),
+                 QString("old-package/local-asr/model"));
+    }
     void keepsProviderConfigurationSeparate() {
         QTemporaryDir dir(QDir::currentPath() + "/settings-XXXXXX");
         QSettings::setDefaultFormat(QSettings::IniFormat);

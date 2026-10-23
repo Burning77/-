@@ -64,7 +64,7 @@ TextRequest request(const QJsonObject &p, const ProviderConfig &config) {
                  "包括：根据所填资料的公司/"
                  "岗位理解（区分事实和推测）、技术考点及优先级、结合真实经历的准备方向、常见问题与追问、面试"
                  "前检查清单。"
-                 "terms "
+                 "英文术语与缩写的term保留英文标准拼写，中文含义写在meaning中。terms "
                  "最多60条，每条最多8个明确且不歧义的别名，不为凑数编造同音词。个人项目或成果不得虚构。")}},
         QJsonObject{{"role", "user"},
                     {"content", QString::fromUtf8(QJsonDocument(input).toJson(QJsonDocument::Compact))}}};
@@ -179,6 +179,10 @@ QJsonObject correct(QJsonObject row, const QJsonObject &p) {
         if (owners[key].size() != 1)
             continue;
         auto alias = aliasText[key];
+        const auto term = *owners[key].begin();
+        // English is already a valid source-language transcript, not a translation request.
+        if (alias.contains(QRegularExpression("[A-Za-z]")) && term.contains(QRegularExpression("[\\p{Han}]")))
+            continue;
         QString pattern = QRegularExpression::escape(alias);
         if (alias.front().unicode() < 128 && alias.front().isLetterOrNumber())
             pattern = "(?<![A-Za-z0-9_])" + pattern;

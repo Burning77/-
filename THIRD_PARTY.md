@@ -1,11 +1,14 @@
 # Third-party components
 
-The local speech recognizer uses Vosk API v0.3.45 and vosk-model-small-cn-0.22, distributed under Apache License 2.0. The runtime package includes the upstream license in local-asr/VOSK-LICENSE.txt and the original model README in local-asr/model/README.
+Version 0.5.0 local ASR uses sherpa-onnx **v1.13.8** (Apache-2.0), ONNX Runtime **1.28.2** (MIT), and **sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20** (Apache-2.0, as declared by its upstream model README). The package includes the int8 encoder/joiner and fp32 decoder, plus the original model README. It does not include Vosk or OpenBLAS from older releases.
 
-- Vosk source and third-party dependencies: https://github.com/alphacep/vosk-api/tree/v0.3.45
-- Vosk model source, license and evaluation: https://alphacephei.com/vosk/models
-- Apache License 2.0: https://www.apache.org/licenses/LICENSE-2.0
+Sources and documentation:
 
-Vosk links Kaldi and OpenFst (Apache License 2.0) and OpenBLAS (BSD 3-Clause). The OpenBLAS notice is included in local-asr/OPENBLAS-LICENSE.txt. Qt and the MinGW runtime libraries are deployed from the installed Qt toolchain and retain their respective licenses and runtime exceptions.
+- [sherpa-onnx source and C API](https://github.com/k2-fsa/sherpa-onnx/tree/v1.13.8)
+- [Official Windows runtime release](https://github.com/k2-fsa/sherpa-onnx/releases/tag/v1.13.8)
+- [Bilingual model documentation](https://k2-fsa.github.io/sherpa/onnx/pretrained_models/online-transducer/zipformer-transducer-models.html#csukuangfj-sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20-bilingual-chinese-english)
+- [ONNX Runtime source](https://github.com/microsoft/onnxruntime/tree/v1.28.2)
 
-The Chinese small model is optimized for modest CPU/memory use. Recognition of technical terms, accents and noisy meeting audio requires validation with the user's equipment.
+The original C API header is vendored unchanged at src/third_party/sherpa-onnx/c-api.h. The package carries SHERPA-ONNX-LICENSE.txt, ONNX-RUNTIME-LICENSE.txt and ONNX-THIRD-PARTY-NOTICES.txt in local-asr/, with model attribution in local-asr/bilingual/README.md. scripts/prepare-local-asr.ps1 pins archive SHA-256 checksums. Runtime/model binaries are downloaded from upstream, not checked into this repository.
+
+Qt and the MinGW runtime libraries are deployed from the installed Qt toolchain and retain their respective licenses and runtime exceptions. English terms, accents and noisy meeting audio still require validation with the user's equipment.

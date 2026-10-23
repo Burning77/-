@@ -1,8 +1,21 @@
 # 面试助手 · C++ / Qt Widgets
 
-Windows 桌面面试记录工具：双路录音、实时中文转写、问题提取、OpenAI GPT / DeepSeek 流式参考回答、面试复盘和 Markdown 导出。
+Windows 桌面面试记录工具：双路录音、实时中英混合转写、问题提取、OpenAI GPT / DeepSeek 流式参考回答、面试复盘和 Markdown 导出。
 
-## 0.4.0：面试前准备、专业术语辅助和离屏恢复
+## 0.5.0：本地中英混合实时识别
+
+运行包：dist/InterviewAssistant-0.5.0-win64.zip。完整解压后打开 InterviewAssistant.exe，保留旁边的 local-asr 目录。先结束旧版会话并退出旧版，新版继续使用原来的账号设置、面试准备和历史。
+
+- 默认语音引擎改为 **sherpa-onnx + 中英双语流式 Zipformer**，同时识别中文、英文和一句话中的中英混说，英文直接显示英文字母。模型的英文通常为大写。识别在后台进行，两路音频独立分段，共用模型以减少内存占用；无需语音 API Key。
+- 设置 → **语音转写 → 本地中英混合识别 → 保存并测试连接**。开始面试后，设备下方应显示 **本地中英混合识别已就绪**。首次加载需数秒。升级时自动采用随包双语模型，不沿用旧 Vosk 中文模型路径；自定义目录也必须是兼容的双语模型。
+- 术语表仍可纠正明确的误听和字母拆读，但不会把已识别的英文替换成中文译名。纠正会保留原始文字。面试前在“面试准备”补充岗位技术缩写及明确别名，有助于后续理解；无法保证生僻缩写、极短单词、口音或噪声下的准确率。
+- 原来的中文模型没有英文识别能力；切换文本服务 OpenAI / ChatGPT / DeepSeek 不会改变语音模型。新版采用独立双语识别引擎，录音仍留在本机。过去已经误听的文字不会自动恢复，可以双击修改。
+
+双语模型与词表约 200 MB，运行包和运行时内存比旧中文小模型更大。官方模型说明见 [sherpa-onnx 中英双语流式模型](https://k2-fsa.github.io/sherpa/onnx/pretrained_models/online-transducer/zipformer-transducer-models.html#csukuangfj-sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20-bilingual-chinese-english)。离线测试包含真实中英混说与英文句子；仍需用自己的麦克风和会议音频检查效果。
+
+开发验证：先运行 scripts/prepare-local-asr.ps1 和 scripts/prepare-asr-test-data.ps1，再运行 scripts/test.ps1 -Configuration Release。测试音频只用于开发验证，不随运行包分发。
+
+## 0.4.0（历史版本）：面试前准备、专业术语辅助和离屏恢复
 
 运行包：dist/InterviewAssistant-0.4.0-win64.zip。主界面新增 **面试准备**：填写公司、岗位、职位描述和真实经历，再点 **AI 分析公司与岗位**。使用当前已选择的 ChatGPT / OpenAI / DeepSeek 服务，生成岗位理解、技术考点、常见问题、准备清单和可编辑术语表；仅分析填写资料，不联网查询公司，模型推测应自行核对。
 
@@ -93,7 +106,7 @@ pwsh -File scripts/package.ps1 -BuildRoot E:/project/InterviewAssistant-build -P
 ## 首次使用
 
 1. 可按上述步骤登录 ChatGPT 套餐或 DeepSeek 账号；也可选择 OpenAI / DeepSeek 的 API Key 方式，填写地址、模型 ID 和对应密钥。
-2. “语音转写”默认本地中文识别。需要云端时切换模式，填写独立语音凭据；DeepSeek 文本 Key 不用于 OpenAI 语音转写。
+2. “语音转写”默认本地中英混合识别。需要云端时切换模式，填写独立语音凭据；DeepSeek 文本 Key 不用于 OpenAI 语音转写。
 3. 测试本地识别仅加载模型；文本或云端转写测试会产生真实网络请求，受所选账户的计费及额度规则约束。
 4. 填写面试名称、岗位和真实项目经历摘要，选择远端播放设备与麦克风。
 5. 在参与者知情并同意录音及 AI 辅助的情况下开始；建议佩戴耳机，减少远端声音回录进麦克风。

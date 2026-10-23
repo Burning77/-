@@ -171,6 +171,24 @@ class PreparationTest : public QObject {
         row["text"] = QStringLiteral("丘特");
         QCOMPARE(Preparation::correct(row, p), row);
     }
+    void explicitEnglishSpellingAliasKeepsOriginalTranscript() {
+        auto p = prepared();
+        auto terms = p["terms"].toArray();
+        terms.append(QJsonObject{{"term", "semaphore"}, {"aliases", QJsonArray{"semophor"}}});
+        p["terms"] = terms;
+        QJsonObject row{{"text", "EXPLAIN A MUTEX IN A SEMOPHOR"}, {"final", true}};
+        auto fixed = Preparation::correct(row, p);
+        QCOMPARE(fixed["text"].toString(), QString("EXPLAIN A MUTEX IN A semaphore"));
+        QCOMPARE(fixed["rawText"], row["text"]);
+    }
+    void recognizedEnglishIsNotTranslatedByGlossary() {
+        auto p = prepared();
+        auto terms = p["terms"].toArray();
+        terms.append(QJsonObject{{"term", QStringLiteral("直接内存访问")}, {"aliases", QJsonArray{"DMA"}}});
+        p["terms"] = terms;
+        QJsonObject row{{"text", QStringLiteral("用 DMA 和 FreeRTOS，what is a mutex?")}, {"final", true}};
+        QCOMPARE(Preparation::correct(row, p), row);
+    }
     void staleAnalysisAndGlossaryAreNotAppliedAfterRoleChanges() {
         auto p = prepared();
         p["role"] = QStringLiteral("财务");

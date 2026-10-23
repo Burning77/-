@@ -181,7 +181,7 @@ SettingsDialog::SettingsDialog(QWidget *p) : QDialog(p), client(this) {
         if (name == "Transcription") {
             speechMode = new QComboBox;
             speechMode->setObjectName("transcriptionMode");
-            speechMode->addItem(QStringLiteral("本地中文识别（无需 API Key）"), "Local");
+            speechMode->addItem(QStringLiteral("本地中英混合识别（无需 API Key）"), "Local");
             speechMode->addItem(QStringLiteral("OpenAI 云端实时转写"), "Cloud");
             speechMode->setCurrentIndex(AppSettings().transcriptionMode() == "Local" ? 0 : 1);
             localModel = new QLineEdit(AppSettings().localModelPath());
@@ -225,7 +225,8 @@ SettingsDialog::SettingsDialog(QWidget *p) : QDialog(p), client(this) {
                                                 "官方平台授权页。调用权限和额度以该账号为准；登录不代表免费聊"
                                                 "天额度可用于本软件。API Key 模式可独立使用。")
             : name == "Transcription"
-                ? QStringLiteral("本地模式的音频留在本机，无需 Key。云端模式使用独立 API 凭据和额度，默认 "
+                ? QStringLiteral("本地模式支持中英混说，英文按原文显示；音频留在本机，无需 "
+                                 "Key。云端模式使用独立 API 凭据和额度，默认 "
                                  "gpt-live-transcribe；音频会发送给云端服务。设置在下一场录音开始时生效。")
                 : QStringLiteral("参考回答、问题提取和复盘使用当前选定的文本服务。切换只影响后续请求。密钥保"
                                  "存在 Windows 凭据管理器。"));
@@ -409,7 +410,7 @@ void SettingsDialog::test(int index) {
                 }
             });
             local->connectSession(newId(), "test", AppSettings().localModelPath());
-            QTimer::singleShot(15000, local, [f, local, guard] {
+            QTimer::singleShot(30000, local, [f, local, guard] {
                 if (guard)
                     f.result->setText(QStringLiteral("本地识别初始化超时，请检查模型路径"));
                 local->stop();

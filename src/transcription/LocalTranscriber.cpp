@@ -10,8 +10,13 @@ QJsonObject LocalResultAssembler::apply(QString sid, QString channel, QString te
     if (text.isEmpty() && row.isEmpty())
         return {};
     if (row.isEmpty())
-        row = {{"id", newId()}, {"sessionId", sid},        {"channel", channel},    {"startMs", start},
-               {"revision", 0}, {"approximateTime", true}, {"engine", "Vosk-local"}};
+        row = {{"id", newId()},
+               {"sessionId", sid},
+               {"channel", channel},
+               {"startMs", start},
+               {"revision", 0},
+               {"approximateTime", true},
+               {"engine", "sherpa-onnx-zipformer-zh-en"}};
     if (!final && row.value("text") == text)
         return {};
     row["text"] = text;
@@ -32,7 +37,7 @@ void LocalTranscriber::connectSession(QString sid, QString ch, QString model, QS
     channel = ch;
     auto epoch = generation;
     if (library.isEmpty())
-        library = QCoreApplication::applicationDirPath() + "/local-asr/libvosk.dll";
+        library = QCoreApplication::applicationDirPath() + "/local-asr/sherpa-onnx-c-api.dll";
     auto w = new LocalWorker(sid, ch, model, library);
     worker = w;
     connect(w, &LocalWorker::text, this, [this, epoch](QJsonObject row) {

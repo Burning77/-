@@ -6,13 +6,14 @@ QString AppSettings::transcriptionMode() const {
 }
 QString AppSettings::localModelPath() const {
     return QSettings()
-        .value("transcription/localModel", QCoreApplication::applicationDirPath() + "/local-asr/model")
+        .value("transcription/bilingualModel",
+               QCoreApplication::applicationDirPath() + "/local-asr/bilingual")
         .toString();
 }
 void AppSettings::saveLocalTranscription(QString mode, QString path) {
     QSettings s;
     s.setValue("transcription/mode", mode);
-    s.setValue("transcription/localModel", path);
+    s.setValue("transcription/bilingualModel", path);
 }
 ProviderConfig AppSettings::config(const QString &provider) const {
     QSettings s;

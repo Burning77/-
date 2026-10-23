@@ -15,10 +15,18 @@ if($LASTEXITCODE -ne 0){throw 'Qt deployment failed'}
 Copy-Item -LiteralPath (Join-Path $root 'README.md') -Destination $stage
 $asr=Join-Path $stage 'local-asr'
 New-Item -ItemType Directory -Path $asr -Force|Out-Null
-Copy-Item -LiteralPath (Join-Path $root '.deps/local-asr/vosk-win64-0.3.45/libvosk.dll') -Destination $asr -Force
-Copy-Item -LiteralPath (Join-Path $root '.deps/local-asr/vosk-model-small-cn-0.22') -Destination (Join-Path $asr 'model') -Recurse -Force
-Copy-Item -LiteralPath (Join-Path $root '.deps/local-asr/VOSK-LICENSE.txt') -Destination $asr -Force
-Copy-Item -LiteralPath (Join-Path $root '.deps/local-asr/OPENBLAS-LICENSE.txt') -Destination $asr -Force
+$runtime=Join-Path $root '.deps/sherpa-onnx-v1.13.8-win-x64-shared-MT-Release-no-tts/lib'
+foreach($dll in @('sherpa-onnx-c-api.dll','onnxruntime.dll','onnxruntime_providers_shared.dll')){
+    Copy-Item -LiteralPath (Join-Path $runtime $dll) -Destination $asr -Force
+}
+$model=Join-Path $asr 'bilingual'
+New-Item -ItemType Directory -Path $model -Force|Out-Null
+foreach($file in @('encoder-epoch-99-avg-1.int8.onnx','decoder-epoch-99-avg-1.onnx','joiner-epoch-99-avg-1.int8.onnx','tokens.txt','README.md')){
+    Copy-Item -LiteralPath (Join-Path $root ('.deps/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20/'+$file)) -Destination $model -Force
+}
+foreach($license in @('SHERPA-ONNX-LICENSE.txt','ONNX-RUNTIME-LICENSE.txt','ONNX-THIRD-PARTY-NOTICES.txt')){
+    Copy-Item -LiteralPath (Join-Path $root ('.deps/'+$license)) -Destination $asr -Force
+}
 Copy-Item -LiteralPath (Join-Path $root 'THIRD_PARTY.md') -Destination $stage -Force
 $destination=Join-Path $root 'dist'
 New-Item -ItemType Directory -Path $destination -Force|Out-Null
