@@ -259,7 +259,10 @@ void SettingsDialog::loadDeepSeekModels() {
         if (!guard || session != DeepSeekAccount::shared().sessionId())
             return;
         if (!error.isEmpty()) {
-            guard->deepSeekStatus->setText(error);
+            guard->deepSeekStatus->setText(
+                QStringLiteral(
+                    "DeepSeek 账号已登录；模型列表读取失败：%1。保留当前模型，可稍后重试或测试连接。")
+                    .arg(error));
             return;
         }
         QStringList ids;
@@ -273,8 +276,8 @@ void SettingsDialog::loadDeepSeekModels() {
                 ids.append(id);
         }
         if (ids.isEmpty()) {
-            guard->deepSeekStatus->setText(
-                QStringLiteral("账号未返回支持文本对话的可用模型，请检查平台授权"));
+            guard->deepSeekStatus->setText(QStringLiteral(
+                "DeepSeek 账号已登录；模型列表未包含可用文本模型。保留当前模型，可稍后重试或测试连接。"));
             return;
         }
         if (!guard->deepSeekMode->currentData().toBool())

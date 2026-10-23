@@ -14,6 +14,10 @@ Copy-Item -LiteralPath (Join-Path $nativeBuild 'resume') -Destination $stage -Re
 $env:PATH='D:\Qt\6.11.2\mingw_64\bin;D:\Qt\Tools\mingw1310_64\bin;'+$env:PATH
 & 'D:/Qt/6.11.2/mingw_64/bin/windeployqt.exe' --release --compiler-runtime --no-translations --no-quick-import --dir $stage (Join-Path $stage 'InterviewAssistant.exe')
 if($LASTEXITCODE -ne 0){throw 'Qt deployment failed'}
+Copy-Item -LiteralPath (Join-Path $nativeBuild 'tls') -Destination $stage -Recurse -Force
+foreach($file in @('libssl-3-x64.dll','libcrypto-3-x64.dll')){
+    Copy-Item -LiteralPath (Join-Path $nativeBuild $file) -Destination $stage -Force
+}
 Copy-Item -LiteralPath (Join-Path $root 'README.md') -Destination $stage
 $asr=Join-Path $stage 'local-asr'
 New-Item -ItemType Directory -Path $asr -Force|Out-Null

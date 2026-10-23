@@ -1,6 +1,15 @@
 #include "auth/DeepSeekAccount.h"
 #include "auth/SecretStore.h"
 #include "ai/TextClient.h"
+#include "ui/SettingsDialog.h"
+#include <QLabel>
+#include <QPushButton>
+#include <QNetworkProxy>
+#include <QNetworkProxyFactory>
+#include <QScopeGuard>
+#include <QSslSocket>
+#include <QStandardPaths>
+#include <QTcpServer>
 #include <QFile>
 #include <QSignalSpy>
 #include <cstring>
@@ -8,6 +17,7 @@
 #include <QTemporaryDir>
 #include <QTcpSocket>
 #include <QUrlQuery>
+#include <QUuid>
 #include <QtTest>
 class FixtureReply : public QNetworkReply {
     QByteArray body;
@@ -95,6 +105,88 @@ class DeepSeekTest : public QObject {
     }
     void init() {
         QSettings().clear();
+    }
+    void usesBundledOpenSslForAccountConnections() {
+        QVERIFY(QSslSocket::setActiveBackend("schannel"));
+        QCOMPARE(QSslSocket::activeBackend(), QString("schannel"));
+        QTemporaryDir dir;
+        DeepSeekAccount account(nullptr, dir.path());
+        QCOMPARE(QSslSocket::activeBackend(), QString("openssl"));
+        QVERIFY(QSslSocket::supportsSsl());
+    }
+    void catalogueFailureDoesNotHideSuccessfulLogin() {
+        QStandardPaths::setTestModeEnabled(true);
+        auto &account = DeepSeekAccount::shared();
+        signIn(account);
+        auto cleanup = qScopeGuard([&] {
+            account.signOut();
+            QStandardPaths::setTestModeEnabled(false);
+        });
+        account.transport = [](QString, QUrl url, QJsonObject, QString, DeepSeekAccount::JsonCallback done) {
+            if (url.path() == "/models")
+                done({}, "fixture-model-list-failed");
+            else
+                done(envelope({}), {});
+        };
+        // Placeholder checks use Windows Credential Manager, independent of test-mode
+        // paths. Give all three API-key fields isolated identities before creating UI.
+        const auto fixtureUrl = "https://" + QUuid::createUuid().toString(QUuid::WithoutBraces) + ".invalid";
+        QSettings().setValue("DeepSeek/accountLogin", false);
+        for (const auto &key : {"OpenAI/url", "DeepSeek/url", "transcription/url"})
+            QSettings().setValue(key, fixtureUrl);
+        SettingsDialog dialog;
+        QPushButton *refresh = nullptr;
+        for (auto button : dialog.findChildren<QPushButton *>())
+            if (button->text() == QStringLiteral("读取账号可用模型"))
+                refresh = button;
+        QVERIFY(refresh);
+        refresh->click();
+        QLabel *status = nullptr;
+        for (auto label : dialog.findChildren<QLabel *>())
+            if (label->text().contains("fixture-model-list-failed"))
+                status = label;
+        QVERIFY(status);
+        QVERIFY(account.signedIn());
+        QVERIFY2(status->text().contains(QStringLiteral("账号已登录")), qPrintable(status->text()));
+    }
+    void catalogueNetworkFailureReportsActualCauseWithoutHttpZero() {
+        QTemporaryDir dir;
+        DeepSeekAccount account(nullptr, dir.path());
+        signIn(account);
+        account.transport = {};
+        QTcpServer proxy;
+        QVERIFY(proxy.listen(QHostAddress::LocalHost, 0));
+        connect(&proxy, &QTcpServer::newConnection, &proxy, [&] {
+            while (proxy.hasPendingConnections()) {
+                auto socket = proxy.nextPendingConnection();
+                connect(socket, &QTcpSocket::readyRead, socket, [socket] {
+                    socket->readAll();
+                    socket->disconnectFromHost();
+                });
+                connect(socket, &QTcpSocket::disconnected, socket, &QObject::deleteLater);
+            }
+        });
+        const auto oldProxy = QNetworkProxy::applicationProxy();
+        const auto oldSystem = QNetworkProxyFactory::usesSystemConfiguration();
+        auto restore = qScopeGuard([&] {
+            QNetworkProxy::setApplicationProxy(oldProxy);
+            if (oldSystem)
+                QNetworkProxyFactory::setUseSystemConfiguration(true);
+        });
+        QNetworkProxy::setApplicationProxy(
+            QNetworkProxy(QNetworkProxy::HttpProxy, "127.0.0.1", proxy.serverPort()));
+        bool finished = false;
+        QString error;
+        account.models([&](QJsonObject, QString why) {
+            error = why;
+            finished = true;
+        });
+        QTRY_VERIFY_WITH_TIMEOUT(finished, 5000);
+        QVERIFY(account.signedIn());
+        QVERIFY2(!error.contains("HTTP 0"), qPrintable(error));
+        QVERIFY(error.contains(QStringLiteral("网络")));
+        QVERIFY(error.contains("api.deepseek.com"));
+        QVERIFY(!error.contains("fixture-token"));
     }
     void signsInThroughPkceAndClearsWithoutRestoringLateResponses() {
         QTemporaryDir dir;

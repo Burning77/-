@@ -1,6 +1,7 @@
 #include "DeepSeekAccount.h"
 #include "OAuthProtocol.h"
 #include "SecretStore.h"
+#include "app/NetworkRuntime.h"
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QDesktopServices>
@@ -110,7 +111,8 @@ struct DeepSeekAccount::State {
         };
         QObject::connect(reply, &QNetworkReply::readyRead, owner, read);
         QObject::connect(
-            reply, &QNetworkReply::finished, owner, [reply, result, tooLarge, read, done = std::move(done)] {
+            reply, &QNetworkReply::finished, owner,
+            [reply, result, tooLarge, read, token, done = std::move(done)] {
                 read();
                 auto status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
                 QString error;
@@ -118,9 +120,21 @@ struct DeepSeekAccount::State {
                 auto document = QJsonDocument::fromJson(*result, &parse);
                 if (*tooLarge)
                     error = QStringLiteral("DeepSeek 响应过大，已停止读取");
-                else if (status != 200 || reply->error() != QNetworkReply::NoError)
-                    error = QStringLiteral("DeepSeek 请求失败（HTTP %1），请检查网络和账号权限").arg(status);
-                else if (parse.error != QJsonParseError::NoError || !document.isObject())
+                else if (status != 200 || reply->error() != QNetworkReply::NoError) {
+                    auto detail = reply->errorString();
+                    if (!token.isEmpty())
+                        detail.replace(token, "[redacted]");
+                    for (auto &c : detail)
+                        if (c.category() == QChar::Other_Control)
+                            c = ' ';
+                    detail = detail.left(350);
+                    error = status > 0
+                                ? QStringLiteral("DeepSeek 请求失败（HTTP %1）：%2").arg(status).arg(detail)
+                                : QStringLiteral("DeepSeek 网络连接失败（%1，Qt %2）：%3")
+                                      .arg(reply->url().host())
+                                      .arg(int(reply->error()))
+                                      .arg(detail);
+                } else if (parse.error != QJsonParseError::NoError || !document.isObject())
                     error = QStringLiteral("DeepSeek 返回无效 JSON");
                 reply->deleteLater();
                 done(document.object(), error);
@@ -154,6 +168,7 @@ struct DeepSeekAccount::State {
     }
 };
 DeepSeekAccount::DeepSeekAccount(QObject *p, QString vault) : QObject(p), state(std::make_unique<State>()) {
+    NetworkRuntime::initializeTls();
     state->owner = this;
     state->file = (vault.isEmpty() ? QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) +
                                          "/deepseek-account"

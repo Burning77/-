@@ -1,5 +1,6 @@
 #include "ui/MainWindow.h"
 #include "app/InstanceGuard.h"
+#include "app/NetworkRuntime.h"
 #include <QApplication>
 #include <QCommandLineParser>
 #include <QDir>
@@ -10,6 +11,7 @@ int main(int argc, char **argv) {
     app.setOrganizationName("LocalInterviewTools");
     app.setApplicationName("InterviewAssistant");
     app.setApplicationVersion(INTERVIEW_APP_VERSION);
+    NetworkRuntime::initializeTls();
     const auto profileRoot = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
     QDir().mkpath(profileRoot);
     InstanceGuard instance(profileRoot + "/application.lock");
