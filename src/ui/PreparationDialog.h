@@ -9,6 +9,7 @@ class QTableWidget;
 class QLabel;
 class QPushButton;
 class QTabWidget;
+class ResumeUploadWidget;
 class PreparationDialog : public QDialog {
     Q_OBJECT
   public:
@@ -24,7 +25,8 @@ class PreparationDialog : public QDialog {
     bool readOnly;
     bool glossaryEdited = false;
     QLineEdit *company, *role;
-    QPlainTextEdit *job, *experience;
+    QPlainTextEdit *job;
+    ResumeUploadWidget *resume;
     QTextBrowser *analysis;
     QTableWidget *terms;
     QLabel *status;

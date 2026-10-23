@@ -2,6 +2,7 @@
 #include "ui/SettingsDialog.h"
 #include "app/AppSettings.h"
 #include "preparation/Preparation.h"
+#include "ui/ResumeUploadWidget.h"
 #include <QTableWidget>
 #include <QComboBox>
 #include <QFontDatabase>
@@ -167,6 +168,38 @@ class WindowTest : public QObject {
                                                                           {"final", true},
                                                                           {"text", QStringLiteral("丘特")}});
         QCOMPARE(c->store.list("transcripts", c->liveSessionId()).first()["text"].toString(), QString("Qt"));
+        QVERIFY(c->discardRecording());
+    }
+    void uploadedResumeIsSavedAndIncludedInNewSession() {
+        QTemporaryDir dir(QDir::currentPath() + "/resume-window-XXXXXX");
+        MainWindow w(nullptr, dir.path());
+        auto resume = w.findChild<ResumeUploadWidget *>();
+        QVERIFY2(resume, "The main window must import a resume in place of the experience editor");
+        QFile file(dir.filePath(QStringLiteral("简历.txt")));
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        file.write(QStringLiteral("真实经历：C6678 DSP 雷达项目与 Qt 上位机").toUtf8());
+        file.close();
+        auto c = w.findChild<SessionController *>();
+        c->autoExtract = false;
+        c->audio.renderFactory = [](const QString &) -> AudioSource * { return new WindowIdleSource; };
+        c->audio.microphoneFactory = [](const QByteArray &) -> AudioSource * { return new WindowIdleSource; };
+        resume->importFile(file.fileName());
+        QVERIFY(!w.findChild<QPushButton *>("startButton")->isEnabled());
+        QTRY_VERIFY_WITH_TIMEOUT(!resume->busy(), 5000);
+        const auto draft = Preparation::load(dir.path());
+        QVERIFY(draft["resume"].toObject()["text"].toString().contains("C6678"));
+        w.show();
+        QTest::qWait(60);
+        w.resize(1280, 780);
+        QTest::qWait(30);
+        QVERIFY(w.grab().save(QDir::currentPath() + "/resume-main-preview.png"));
+        w.findChild<QPushButton *>("startButton")->click();
+        QVERIFY(c->recording());
+        const auto session = c->store.list("sessions", c->liveSessionId()).first();
+        QCOMPARE(session["experience"].toString(),
+                 QStringLiteral("真实经历：C6678 DSP 雷达项目与 Qt 上位机"));
+        QCOMPARE(session["preparation"].toObject()["resume"], draft["resume"]);
+        QVERIFY(!resume->findChild<QPushButton *>("uploadResumeButton")->isEnabled());
         QVERIFY(c->discardRecording());
     }
     void preparationDialogSavesDraftAndNewSessionGetsSnapshot() {

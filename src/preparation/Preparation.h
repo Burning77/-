@@ -1,6 +1,7 @@
 #pragma once
 #include "domain/Types.h"
 namespace Preparation {
+QString candidateText(const QJsonObject &);
 QString fingerprint(const QJsonObject &);
 QJsonObject load(const QString &root);
 bool save(const QString &root, const QJsonObject &, QString *error = nullptr);

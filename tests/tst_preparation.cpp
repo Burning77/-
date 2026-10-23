@@ -2,6 +2,7 @@
 #include "ai/InterviewLogic.h"
 #include "ui/PreparationDialog.h"
 #include "app/AppSettings.h"
+#include "ui/ResumeUploadWidget.h"
 #include <QLineEdit>
 #include <QPushButton>
 #include <QTextBrowser>
@@ -68,6 +69,95 @@ class PreparationTest : public QObject {
         return p;
     }
   private slots:
+    void analysisIncludesFullResume_data() {
+        QTest::addColumn<QString>("provider");
+        QTest::newRow("OpenAI") << QString("OpenAI");
+        QTest::newRow("ChatGPT") << QString("ChatGPT");
+        QTest::newRow("DeepSeek") << QString("DeepSeek");
+    }
+    void analysisIncludesFullResume() {
+        QFETCH(QString, provider);
+        auto p = prepared();
+        const auto text = QStringLiteral("项目：C++ 固件与 Qt 上位机。\n").repeated(850) + "RESUME-END";
+        QVERIFY(text.size() > 4000);
+        p["resume"] = QJsonObject{{"fileName", QStringLiteral("我的简历.pdf")}, {"text", text}};
+        ProviderConfig config;
+        config.provider = provider;
+        auto request = Preparation::request(p, config);
+        const auto input =
+            QJsonDocument::fromJson(request.messages.last().toObject()["content"].toString().toUtf8())
+                .object();
+        QCOMPARE(input["resume"].toObject()["fileName"].toString(), QStringLiteral("我的简历.pdf"));
+        QCOMPARE(input["resume"].toObject()["text"].toString(), text);
+        QCOMPARE(input["company"].toString(), QStringLiteral("示例科技"));
+        QCOMPARE(request.config.provider, provider);
+    }
+    void replacingResumeInvalidatesAnalysisAndGlossary() {
+        auto p = prepared();
+        p["resume"] = QJsonObject{{"fileName", "resume.txt"}, {"text", "First resume: Qt"}};
+        p["analysisBasis"] = Preparation::fingerprint(p);
+        p["termsBasis"] = Preparation::fingerprint(p);
+        const auto original = Preparation::fingerprint(p);
+        p["resume"] =
+            QJsonObject{{"fileName", "resume.txt"}, {"text", "Different resume: financial accounting"}};
+        QVERIFY(Preparation::fingerprint(p) != original);
+        QVERIFY(!Preparation::context(p).contains(QStringLiteral("重点准备线程")));
+        const QJsonObject row{{"text", QStringLiteral("丘特")}, {"final", true}};
+        QCOMPARE(Preparation::correct(row, p), row);
+    }
+    void legacyExperienceRemainsTheSameCandidateBackground() {
+        auto old = prepared();
+        old["experience"] = "Legacy Qt project experience";
+        QCOMPARE(Preparation::candidateText(old), QString("Legacy Qt project experience"));
+        const auto basis = Preparation::fingerprint(old);
+        auto migrated = old;
+        migrated["resume"] = QJsonObject{
+            {"fileName", "Legacy experience"}, {"text", "Legacy Qt project experience"}, {"legacy", true}};
+        migrated["experience"] = QString();
+        QCOMPARE(Preparation::fingerprint(migrated), basis);
+        QCOMPARE(Preparation::candidateText(migrated), QString("Legacy Qt project experience"));
+    }
+    void dialogImportsResumeAndSendsItWithCompanyAndRole() {
+        QTemporaryDir dir;
+        QFile file(dir.filePath("resume.txt"));
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        file.write("Resume marker: Qt C++ DSP C6678");
+        file.close();
+        PreparationDialog dialog(dir.path(), prepared());
+        auto resume = dialog.findChild<ResumeUploadWidget *>();
+        QVERIFY2(resume, "Preparation must offer resume upload");
+        resume->importFile(file.fileName());
+        QVERIFY(!dialog.findChild<QPushButton *>("analyzePreparation")->isEnabled());
+        QVERIFY(!dialog.findChild<QPushButton *>("savePreparation")->isEnabled());
+        QTRY_VERIFY_WITH_TIMEOUT(!resume->busy(), 5000);
+        dialog.show();
+        dialog.resize(900, 700);
+        QTest::qWait(30);
+        QVERIFY(dialog.grab().save(QDir::currentPath() + "/resume-preparation-preview.png"));
+        auto client = dialog.findChild<TextClient *>();
+        client->keyReader = [](QString) { return QString("fixture"); };
+        QByteArray captured;
+        const QByteArray body =
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"{\\\"analysis\\\":\\\"Resume matched "
+            "to Qt role\\\",\\\"terms\\\":[]}\"}\n\ndata: {\"type\":\"response.completed\"}\n\n";
+        client->postRequest = [&](const QNetworkRequest &, const QByteArray &bytes) {
+            captured = bytes;
+            return static_cast<QNetworkReply *>(new PreparationReply(body, client));
+        };
+        dialog.findChild<QPushButton *>("analyzePreparation")->click();
+        QVERIFY(captured.contains("Resume marker: Qt C++ DSP C6678"));
+        QVERIFY(captured.contains(QStringLiteral("示例科技").toUtf8()));
+        QTRY_COMPARE(Preparation::load(dir.path())["analysis"].toString(),
+                     QString("Resume matched to Qt role"));
+        auto saved = Preparation::load(dir.path());
+        QCOMPARE(saved["resume"].toObject()["text"].toString(), QString("Resume marker: Qt C++ DSP C6678"));
+        resume->findChild<QPushButton *>("removeResumeButton")->click();
+        dialog.findChild<QPushButton *>("savePreparation")->click();
+        saved = Preparation::load(dir.path());
+        QVERIFY(saved["resume"].toObject().isEmpty());
+        QVERIFY(Preparation::candidateText(saved).isEmpty());
+        QVERIFY(!Preparation::context(saved).contains("Resume matched to Qt role"));
+    }
     void initTestCase() {
         QFontDatabase::addApplicationFont(QStringLiteral("C:/Windows/Fonts/msyh.ttc"));
         QApplication::setFont(QFont("Microsoft YaHei", 9));

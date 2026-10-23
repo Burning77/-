@@ -1,6 +1,7 @@
 #include "MainWindow.h"
 #include "SettingsDialog.h"
 #include "PreparationDialog.h"
+#include "ResumeUploadWidget.h"
 #include "preparation/Preparation.h"
 #include "ai/InterviewLogic.h"
 #include "app/AppSettings.h"
@@ -211,11 +212,8 @@ MainWindow::MainWindow(QWidget *parent, QString dataRoot)
     auto newButton = new QPushButton(QStringLiteral("新会话"));
     row->addWidget(newButton);
     sessionLayout->addLayout(row);
-    experience = new QPlainTextEdit;
-    experience->setMaximumHeight(60);
-    experience->setPlaceholderText(
-        QStringLiteral("可选：填写真实项目经历、技术栈和职责，帮助参考回答贴合你的背景。"));
-    sessionLayout->addWidget(experience);
+    resume = new ResumeUploadWidget;
+    sessionLayout->addWidget(resume);
     auto controls = new QHBoxLayout;
     startButton = new QPushButton(QStringLiteral("开始面试"));
     startButton->setObjectName("startButton");
@@ -432,8 +430,20 @@ MainWindow::MainWindow(QWidget *parent, QString dataRoot)
     auto previousPreparation = Preparation::load(controller.store.root());
     if (!previousPreparation.isEmpty()) {
         role->setText(previousPreparation["role"].toString());
-        experience->setPlainText(previousPreparation["experience"].toString());
+        resume->setDocument(previousPreparation["resume"].toObject(),
+                            previousPreparation["experience"].toString());
     }
+    connect(resume, &ResumeUploadWidget::documentChanged, this, [this] {
+        QString error;
+        if (!Preparation::save(controller.store.root(), currentPreparation(), &error))
+            statusBar()->showMessage(error);
+        else
+            statusBar()->showMessage(QStringLiteral("简历准备资料已保存；请重新分析公司与岗位"));
+    });
+    connect(resume, &ResumeUploadWidget::busyChanged, this, [this, preparationButton](bool busy) {
+        preparationButton->setEnabled(!busy);
+        updateState();
+    });
     connect(preparationButton, &QPushButton::clicked, this, [this] {
         auto before = Preparation::load(controller.store.root());
         auto prepared = currentPreparation();
@@ -448,7 +458,7 @@ MainWindow::MainWindow(QWidget *parent, QString dataRoot)
         auto saved = Preparation::load(controller.store.root());
         if (!locked && saved != before) {
             role->setText(saved["role"].toString());
-            experience->setPlainText(saved["experience"].toString());
+            resume->setDocument(saved["resume"].toObject(), saved["experience"].toString());
         }
     });
     refreshHistory();
@@ -473,22 +483,25 @@ void MainWindow::devices() {
 QJsonObject MainWindow::currentPreparation() const {
     auto prepared = Preparation::load(controller.store.root());
     prepared["role"] = role->text();
-    prepared["experience"] = experience->toPlainText();
+    prepared["resume"] = resume->document();
+    prepared["experience"] = QString();
     return prepared;
 }
 QString MainWindow::ensureSession() {
     if (!viewedSession.isEmpty())
         return viewedSession;
-    viewedSession = controller.createSession(title->text(), role->text(), experience->toPlainText(),
-                                             currentPreparation());
+    const auto prepared = currentPreparation();
+    viewedSession =
+        controller.createSession(title->text(), role->text(), Preparation::candidateText(prepared), prepared);
     refreshHistory();
     return viewedSession;
 }
 void MainWindow::start() {
-    if (controller.recording())
+    if (controller.recording() || resume->busy())
         return;
-    auto sid = controller.createSession(title->text(), role->text(), experience->toPlainText(),
-                                        currentPreparation());
+    const auto prepared = currentPreparation();
+    auto sid =
+        controller.createSession(title->text(), role->text(), Preparation::candidateText(prepared), prepared);
     if (sid.isEmpty())
         return;
     viewedSession = sid;
@@ -522,6 +535,10 @@ void MainWindow::discardRecording() {
         QMessageBox::warning(this, QStringLiteral("丢弃失败"), controller.store.lastError());
 }
 void MainWindow::addQuestion() {
+    if (resume->busy()) {
+        statusBar()->showMessage(QStringLiteral("正在读取简历，请完成后再添加问题"));
+        return;
+    }
     auto text = manual->text().trimmed();
     if (text.isEmpty())
         return;
@@ -666,7 +683,8 @@ void MainWindow::refreshAnswers() {
 }
 void MainWindow::updateState() {
     bool live = controller.recording();
-    startButton->setEnabled(!live);
+    startButton->setEnabled(!live && !resume->busy());
+    resume->setReadOnly(live);
     pauseButton->setEnabled(live && !controller.stopping());
     finishButton->setEnabled(live && !controller.stopping());
     discardButton->setEnabled(live && !controller.stopping());
@@ -674,9 +692,8 @@ void MainWindow::updateState() {
     state->setText(controller.stopping() ? QStringLiteral("正在保存最终转写…")
                    : live ? (controller.paused() ? QStringLiteral("已暂停") : QStringLiteral("● 正在录音"))
                           : QStringLiteral("未在录音"));
-    for (auto widget :
-         {static_cast<QWidget *>(title), static_cast<QWidget *>(role), static_cast<QWidget *>(experience),
-          static_cast<QWidget *>(remoteDevice), static_cast<QWidget *>(micDevice)})
+    for (auto widget : {static_cast<QWidget *>(title), static_cast<QWidget *>(role),
+                        static_cast<QWidget *>(remoteDevice), static_cast<QWidget *>(micDevice)})
         widget->setEnabled(!live);
     reviewButton->setEnabled(!viewedSession.isEmpty() &&
                              !(live && viewedSession == controller.liveSessionId()));

@@ -12,6 +12,7 @@
 #include <QProgressBar>
 #include <QPushButton>
 #include <QTextBrowser>
+class ResumeUploadWidget;
 class MainWindow : public QMainWindow {
     Q_OBJECT
   public:
@@ -35,7 +36,7 @@ class MainWindow : public QMainWindow {
     void ensureOnScreen(bool forcePrimary);
     QComboBox *history, *provider, *remoteDevice, *micDevice;
     QLineEdit *title, *role, *manual;
-    QPlainTextEdit *experience;
+    ResumeUploadWidget *resume;
     QListWidget *transcripts, *questions;
     QTextBrowser *answer, *report;
     QPushButton *startButton, *pauseButton, *finishButton, *discardButton, *reviewButton, *deleteButton;

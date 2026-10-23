@@ -1,4 +1,5 @@
 #include "PreparationDialog.h"
+#include "ResumeUploadWidget.h"
 #include "app/AppSettings.h"
 #include "preparation/Preparation.h"
 #include <QApplication>
@@ -27,8 +28,8 @@ PreparationDialog::PreparationDialog(QString path, QJsonObject initial, bool loc
     auto layout = new QVBoxLayout(this);
     auto help = new QLabel(
         locked ? QStringLiteral("以下为开始本次面试时保存的准备资料；编辑下次准备请结束录音后操作。")
-               : QStringLiteral("填写公司、岗位和职位描述，使用当前所选 AI "
-                                "分析；仅分析填写资料，未联网查询公司。术语表可手动补充。"));
+               : QStringLiteral("填写公司、岗位和职位描述，上传简历后使用当前所选 AI 结合简历分析；"
+                                "仅分析提供的资料，未联网查询公司。术语表可手动补充。"));
     help->setWordWrap(true);
     layout->addWidget(help);
     tabs = new QTabWidget;
@@ -44,13 +45,12 @@ PreparationDialog::PreparationDialog(QString path, QJsonObject initial, bool loc
     job = new QPlainTextEdit(data["jobDescription"].toString());
     job->setObjectName("prepJobDescription");
     job->setPlaceholderText(QStringLiteral("粘贴招聘要求、技术栈、职责；尽量提供原始职位描述"));
-    experience = new QPlainTextEdit(data["experience"].toString());
-    experience->setObjectName("prepExperience");
-    experience->setPlaceholderText(QStringLiteral("可选：真实项目经历，帮助分析准备方向"));
+    resume = new ResumeUploadWidget;
+    resume->setDocument(data["resume"].toObject(), data["experience"].toString());
     form->addRow(QStringLiteral("公司"), company);
     form->addRow(QStringLiteral("岗位"), role);
     form->addRow(QStringLiteral("职位描述（最多12000字）"), job);
-    form->addRow(QStringLiteral("真实经历（最多4000字）"), experience);
+    form->addRow(QStringLiteral("个人简历"), resume);
     auto scroll = new QScrollArea;
     scroll->setWidgetResizable(true);
     scroll->setWidget(page);
@@ -104,7 +104,7 @@ PreparationDialog::PreparationDialog(QString path, QJsonObject initial, bool loc
     company->setReadOnly(locked);
     role->setReadOnly(locked);
     job->setReadOnly(locked);
-    experience->setReadOnly(locked);
+    resume->setReadOnly(locked);
     if (locked) {
         terms->setEditTriggers(QAbstractItemView::NoEditTriggers);
         analyze->hide();
@@ -185,7 +185,8 @@ PreparationDialog::PreparationDialog(QString path, QJsonObject initial, bool loc
     connect(company, &QLineEdit::textChanged, this, stale);
     connect(role, &QLineEdit::textChanged, this, stale);
     connect(job, &QPlainTextEdit::textChanged, this, stale);
-    connect(experience, &QPlainTextEdit::textChanged, this, stale);
+    connect(resume, &ResumeUploadWidget::documentChanged, this, stale);
+    connect(resume, &ResumeUploadWidget::busyChanged, this, [this](bool busy) { setBusy(busy); });
     setBusy(false);
     stale();
 }
@@ -194,7 +195,8 @@ QJsonObject PreparationDialog::gather() const {
     value["company"] = company->text().trimmed();
     value["role"] = role->text().trimmed();
     value["jobDescription"] = job->toPlainText();
-    value["experience"] = experience->toPlainText();
+    value["resume"] = resume->document();
+    value["experience"] = QString();
     QJsonArray values;
     for (int row = 0; row < terms->rowCount(); row++) {
         auto cell = [&](int column) {
@@ -233,11 +235,11 @@ void PreparationDialog::showTerms() {
 void PreparationDialog::setBusy(bool busy) {
     for (auto widget :
          {static_cast<QWidget *>(company), static_cast<QWidget *>(role), static_cast<QWidget *>(job),
-          static_cast<QWidget *>(experience), static_cast<QWidget *>(terms)})
+          static_cast<QWidget *>(resume), static_cast<QWidget *>(terms)})
         widget->setEnabled(!busy);
     analyze->setEnabled(!busy && !readOnly);
     saveButton->setEnabled(!busy && !readOnly);
-    stop->setEnabled(busy);
+    stop->setEnabled(!activeId.isEmpty());
     addTerm->setEnabled(!busy && !readOnly);
     removeTerm->setEnabled(!busy && !readOnly);
 }
@@ -249,12 +251,12 @@ void PreparationDialog::cancelAnalysis() {
     setBusy(false);
 }
 bool PreparationDialog::saveDraft() {
-    if (readOnly)
+    if (readOnly || resume->busy())
         return false;
     auto value = gather();
-    if (job->toPlainText().size() > 12000 || experience->toPlainText().size() > 4000 ||
+    if (job->toPlainText().size() > 12000 || Preparation::candidateText(value).size() > 20000 ||
         terms->rowCount() > 60) {
-        status->setText(QStringLiteral("资料过长：职位描述最多12000字，经历最多4000字，术语最多60条"));
+        status->setText(QStringLiteral("资料过长：职位描述最多12000字，简历文字最多20000字，术语最多60条"));
         return false;
     }
     for (auto term : value["terms"].toArray()) {
@@ -276,7 +278,7 @@ bool PreparationDialog::saveDraft() {
     return true;
 }
 void PreparationDialog::runAnalysis() {
-    if (readOnly || !activeId.isEmpty())
+    if (readOnly || !activeId.isEmpty() || resume->busy())
         return;
     if (company->text().trimmed().isEmpty() || role->text().trimmed().isEmpty()) {
         status->setText(QStringLiteral("请先填写公司和岗位"));

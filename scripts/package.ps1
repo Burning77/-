@@ -9,6 +9,8 @@ $nativeBuild=(Get-Content -LiteralPath (Join-Path $root 'build-release/build-loc
 $stage=Join-Path (Split-Path $nativeBuild -Parent) ('package-'+(Get-Date -Format 'yyyyMMdd-HHmmss')+'/'+$PackageName)
 New-Item -ItemType Directory -Path $stage -Force|Out-Null
 Copy-Item -LiteralPath (Join-Path $nativeBuild 'InterviewAssistant.exe') -Destination $stage -Force
+Copy-Item -LiteralPath (Join-Path $nativeBuild 'ResumeReader.exe') -Destination $stage -Force
+Copy-Item -LiteralPath (Join-Path $nativeBuild 'resume') -Destination $stage -Recurse -Force
 $env:PATH='D:\Qt\6.11.2\mingw_64\bin;D:\Qt\Tools\mingw1310_64\bin;'+$env:PATH
 & 'D:/Qt/6.11.2/mingw_64/bin/windeployqt.exe' --release --compiler-runtime --no-translations --no-quick-import --dir $stage (Join-Path $stage 'InterviewAssistant.exe')
 if($LASTEXITCODE -ne 0){throw 'Qt deployment failed'}
