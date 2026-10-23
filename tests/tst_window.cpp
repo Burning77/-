@@ -11,6 +11,7 @@
 #include <QScreen>
 #include <QWindow>
 #include <QMessageBox>
+#include <QScrollBar>
 #include <QtTest>
 static QPushButton *button(QWidget &w, const QString &text) {
     for (auto b : w.findChildren<QPushButton *>())
@@ -39,6 +40,16 @@ static void selectSession(QWidget &w, const QString &sid) {
             return;
         }
     }
+}
+static bool appendScrollFixture(SessionController *controller, const QString &sid, int index) {
+    const auto text = QString("Entry %1\n").arg(index) + QString(200, QLatin1Char('X'));
+    return controller->store.put("transcripts", {{"id", QString("transcript-%1").arg(index)},
+                                                 {"sessionId", sid},
+                                                 {"channel", "remote"},
+                                                 {"startMs", index * 1000},
+                                                 {"final", true},
+                                                 {"text", text}}) &&
+           !controller->addQuestion(sid, text, false).isEmpty();
 }
 #include <QListWidget>
 #include <QPushButton>
@@ -273,6 +284,133 @@ class WindowTest : public QObject {
         QCOMPARE(resets.size(), 0);
         QTRY_VERIFY_WITH_TIMEOUT(!resets.isEmpty(), 1000);
         QVERIFY(resets.size() <= 2);
+    }
+    void keepsHistoryScrollDuringRefresh_data() {
+        QTest::addColumn<bool>("questionPanel");
+        QTest::addColumn<bool>("nearBottom");
+        QTest::addColumn<bool>("wrap");
+        QTest::newRow("questions-middle") << true << false << false;
+        QTest::newRow("questions-one-step-up") << true << true << false;
+        QTest::newRow("transcripts-middle") << false << false << false;
+        QTest::newRow("transcripts-one-step-up") << false << true << false;
+        QTest::newRow("questions-wrapped-middle") << true << false << true;
+        QTest::newRow("questions-wrapped-one-step-up") << true << true << true;
+        QTest::newRow("transcripts-wrapped-middle") << false << false << true;
+        QTest::newRow("transcripts-wrapped-one-step-up") << false << true << true;
+    }
+    void keepsHistoryScrollDuringRefresh() {
+        QFETCH(bool, questionPanel);
+        QFETCH(bool, nearBottom);
+        QFETCH(bool, wrap);
+        QTemporaryDir dir(QDir::currentPath() + "/scroll-history-XXXXXX");
+        MainWindow w(nullptr, dir.path());
+        auto c = w.findChild<SessionController *>();
+        const auto sid = c->createSession("scroll-history", "", "");
+        for (int i = 0; i < 35; ++i) {
+            QVERIFY(appendScrollFixture(c, sid, i));
+            if (wrap) {
+                const auto text =
+                    QStringLiteral("这是一段用于验证长文本自动换行和阅读位置的面试内容。").repeated(8);
+                auto transcript = c->store.list("transcripts", sid).last();
+                transcript["text"] = text;
+                QVERIFY(c->store.put("transcripts", transcript));
+                auto question = c->store.list("questions", sid).last();
+                question["text"] = text;
+                QVERIFY(c->store.put("questions", question));
+            }
+        }
+        w.show();
+        selectSession(w, sid);
+        auto list = questionPanel ? questionList(w) : w.findChild<QListWidget *>("transcriptList");
+        list->setWordWrap(wrap);
+        QTest::qWait(180);
+        QCOMPARE(list->count(), 35);
+        list->setCurrentRow(34);
+        list->scrollToBottom();
+        QTest::qWait(30);
+        auto vertical = list->verticalScrollBar();
+        auto horizontal = list->horizontalScrollBar();
+        QVERIFY(vertical->maximum() > 4);
+        if (!wrap)
+            QVERIFY(horizontal->maximum() > 0);
+        vertical->setValue(nearBottom ? vertical->maximum() - 1 : vertical->maximum() / 2);
+        horizontal->setValue(horizontal->maximum() / 2);
+        const auto y = vertical->value(), x = horizontal->value();
+        const auto selected = list->currentItem()->data(Qt::UserRole).toString();
+        const auto top = list->itemAt(QPoint(2, 2))->data(Qt::UserRole).toString();
+        // A streaming answer can refresh the lists even when no new row was added.
+        c->changed(sid);
+        QTest::qWait(180);
+        QCOMPARE(vertical->value(), y);
+        QCOMPARE(horizontal->value(), x);
+        QCOMPARE(list->currentItem()->data(Qt::UserRole).toString(), selected);
+        QCOMPARE(list->itemAt(QPoint(2, 2))->data(Qt::UserRole).toString(), top);
+        for (int i = 35; i < 38; ++i) {
+            QVERIFY(appendScrollFixture(c, sid, i));
+            QTest::qWait(180);
+            QCOMPARE(list->count(), i + 1);
+            QCOMPARE(vertical->value(), y);
+            QCOMPARE(horizontal->value(), x);
+            QCOMPARE(list->currentItem()->data(Qt::UserRole).toString(), selected);
+            QCOMPARE(list->itemAt(QPoint(2, 2))->data(Qt::UserRole).toString(), top);
+        }
+    }
+    void followsNewContentUntilScrolledUpAndResumesAtBottom_data() {
+        QTest::addColumn<bool>("questionPanel");
+        QTest::newRow("questions") << true;
+        QTest::newRow("transcripts") << false;
+    }
+    void followsNewContentUntilScrolledUpAndResumesAtBottom() {
+        QFETCH(bool, questionPanel);
+        QTemporaryDir dir(QDir::currentPath() + "/scroll-follow-XXXXXX");
+        MainWindow w(nullptr, dir.path());
+        auto c = w.findChild<SessionController *>();
+        const auto sid = c->createSession("scroll-follow", "", "");
+        for (int i = 0; i < 35; ++i)
+            QVERIFY(appendScrollFixture(c, sid, i));
+        w.show();
+        selectSession(w, sid);
+        auto list = questionPanel ? questionList(w) : w.findChild<QListWidget *>("transcriptList");
+        QTest::qWait(180);
+        auto bar = list->verticalScrollBar();
+        QVERIFY(bar->maximum() > 4);
+        QCOMPARE(bar->value(), bar->maximum());
+        QVERIFY(appendScrollFixture(c, sid, 35));
+        QTest::qWait(180);
+        QCOMPARE(bar->value(), bar->maximum());
+        bar->setValue(bar->maximum() / 2);
+        const auto reading = bar->value();
+        QVERIFY(appendScrollFixture(c, sid, 36));
+        QTest::qWait(180);
+        QCOMPARE(bar->value(), reading);
+        bar->setValue(bar->maximum());
+        QVERIFY(appendScrollFixture(c, sid, 37));
+        QTest::qWait(180);
+        QCOMPARE(bar->value(), bar->maximum());
+    }
+    void switchingSessionsResetsHistoryScroll() {
+        QTemporaryDir dir(QDir::currentPath() + "/scroll-session-XXXXXX");
+        MainWindow w(nullptr, dir.path());
+        auto c = w.findChild<SessionController *>();
+        const auto first = c->createSession("first", "", "");
+        const auto second = c->createSession("second", "", "");
+        for (int i = 0; i < 35; ++i) {
+            QVERIFY(appendScrollFixture(c, first, i));
+            QVERIFY(appendScrollFixture(c, second, i + 35));
+        }
+        w.show();
+        selectSession(w, first);
+        QTest::qWait(180);
+        const auto lists =
+            QList<QListWidget *>{questionList(w), w.findChild<QListWidget *>("transcriptList")};
+        for (auto list : lists) {
+            QVERIFY(list->verticalScrollBar()->maximum() > 4);
+            list->verticalScrollBar()->setValue(2);
+        }
+        selectSession(w, second);
+        QTest::qWait(180);
+        for (auto list : lists)
+            QCOMPARE(list->verticalScrollBar()->value(), list->verticalScrollBar()->maximum());
     }
     void mergesLegacyGapFloodForDisplay() {
         QTemporaryDir dir(QDir::currentPath() + "/window-XXXXXX");

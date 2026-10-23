@@ -26,6 +26,29 @@
 #include <QWindow>
 #include <QScrollArea>
 #include <algorithm>
+namespace {
+struct ListScrollPosition {
+    int x;
+    int y;
+    bool follow;
+
+    explicit ListScrollPosition(QListWidget *list, bool reset)
+        : x(reset ? 0 : list->horizontalScrollBar()->value()),
+          y(reset ? 0 : list->verticalScrollBar()->value()),
+          follow(reset || list->verticalScrollBar()->value() == list->verticalScrollBar()->maximum()) {}
+
+    void restore(QListWidget *list) const {
+        // Finish the rebuilt items' layout before restoring the viewport. Restoring
+        // the current selection alone would scroll an offscreen selected row into view.
+        list->doItemsLayout();
+        if (follow)
+            list->scrollToBottom();
+        else
+            list->verticalScrollBar()->setValue(y);
+        list->horizontalScrollBar()->setValue(x);
+    }
+};
+} // namespace
 static QString timestamp(qint64 ms) {
     auto sec = ms / 1000;
     return QString("%1:%2:%3")
@@ -523,11 +546,12 @@ void MainWindow::refreshHistory() {
     history->setCurrentIndex(qMax(0, history->findData(viewedSession)));
 }
 void MainWindow::refresh() {
+    const bool sessionChanged = displayedSession != viewedSession;
+    const ListScrollPosition transcriptScroll(transcripts, sessionChanged);
+    const ListScrollPosition questionScroll(questions, sessionChanged);
+    displayedSession = viewedSession;
     auto selected =
         transcripts->currentItem() ? transcripts->currentItem()->data(Qt::UserRole).toString() : QString();
-    bool bottom =
-        transcripts->verticalScrollBar()->value() >= transcripts->verticalScrollBar()->maximum() - 3;
-    int scroll = transcripts->verticalScrollBar()->value();
     transcripts->clear();
     if (!viewedSession.isEmpty()) {
         auto rows = controller.store.list("transcripts", viewedSession);
@@ -581,10 +605,7 @@ void MainWindow::refresh() {
             item->setForeground(QColor("#b45309"));
         }
     }
-    if (bottom)
-        transcripts->scrollToBottom();
-    else
-        transcripts->verticalScrollBar()->setValue(scroll);
+    transcriptScroll.restore(transcripts);
     auto qid = questions->currentItem() ? questions->currentItem()->data(Qt::UserRole).toString() : QString();
     {
         QSignalBlocker block(questions);
@@ -599,6 +620,7 @@ void MainWindow::refresh() {
         if (!questions->currentItem() && questions->count())
             questions->setCurrentRow(questions->count() - 1);
     }
+    questionScroll.restore(questions);
     refreshAnswers();
     updateState();
 }

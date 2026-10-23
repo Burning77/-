@@ -25,6 +25,7 @@ class MainWindow : public QMainWindow {
   private:
     SessionController controller;
     QString viewedSession;
+    QString displayedSession;
     bool closingAfterFinish = false;
     bool initiallyPositioned = false;
     bool forcePrimaryPlacement = false;
