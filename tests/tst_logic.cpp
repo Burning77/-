@@ -4,6 +4,41 @@
 class LogicTest : public QObject {
     Q_OBJECT
   private slots:
+    void referenceAnswerUsesShortCandidateSpeech_data() {
+        QTest::addColumn<QString>("provider");
+        for (auto name : {"OpenAI", "ChatGPT", "DeepSeek"})
+            QTest::newRow(name) << QString(name);
+    }
+    void referenceAnswerUsesShortCandidateSpeech() {
+        QFETCH(QString, provider);
+        ProviderConfig config;
+        config.provider = provider;
+        QJsonObject session{{"id", "session"},
+                            {"role", QStringLiteral("嵌入式工程师")},
+                            {"experience", QStringLiteral("只参与驱动开发，没有主导芯片选型")}};
+        QJsonObject question{{"id", "question"}, {"text", QStringLiteral("为什么选用这个芯片？")}};
+        auto request = InterviewLogic::answer(session, question, {}, config);
+        auto instruction = request.messages.first().toObject()["content"].toString();
+        QVERIFY(instruction.contains(QStringLiteral("第一人称")));
+        QVERIFY(instruction.contains(QStringLiteral("口述")));
+        QVERIFY(instruction.contains(QStringLiteral("用中文")));
+        QVERIFY(instruction.contains(QStringLiteral("只输出")));
+        QVERIFY(instruction.contains(QStringLiteral("2至4句")));
+        QVERIFY(instruction.contains(QStringLiteral("80至160字")));
+        QVERIFY(instruction.contains(QStringLiteral("不输出分析过程")));
+        QVERIFY(instruction.contains(QStringLiteral("不虚构")));
+        QVERIFY(!instruction.contains(QStringLiteral("先提供可快速阅读的3至5个要点")));
+        QVERIFY(!instruction.contains(QStringLiteral("再解释原理、例子和可能的追问")));
+        QVERIFY(!instruction.contains(QStringLiteral("信息不足时给可填写的表达框架")));
+        auto input = request.messages.last().toObject()["content"].toString();
+        QVERIFY(input.contains(session["experience"].toString()));
+        QVERIFY(input.contains(question["text"].toString()));
+        QCOMPARE(request.config.provider, provider);
+        QCOMPARE(request.operation, QString("answer"));
+        QCOMPARE(request.sessionId, QString("session"));
+        QCOMPARE(request.questionId, QString("question"));
+        QVERIFY(!request.jsonMode);
+    }
     void preparationReachesExtractionAnswersAndReviews() {
         QJsonObject prep{{"company", QStringLiteral("示例芯片公司")},
                          {"role", "Firmware"},
