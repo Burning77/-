@@ -4,6 +4,48 @@
 class LogicTest : public QObject {
     Q_OBJECT
   private slots:
+    void referenceAnswerUsesSessionResume_data() {
+        QTest::addColumn<QString>("provider");
+        for (auto name : {"OpenAI", "ChatGPT", "DeepSeek"})
+            QTest::newRow(name) << QString(name);
+    }
+    void referenceAnswerUsesSessionResume() {
+        QFETCH(QString, provider);
+        ProviderConfig config;
+        config.provider = provider;
+        const auto resumeText = QStringLiteral("参与 C6678 DSP 驱动和 Qt 上位机开发，未主导芯片选型。\n") +
+                                QStringLiteral("其他简历内容。\n").repeated(1500) +
+                                QStringLiteral("简历末尾：负责 FreeRTOS 任务通信。");
+        const QJsonObject prep{{"company", QStringLiteral("测试公司")},
+                               {"resume", QJsonObject{{"fileName", "candidate.pdf"}, {"text", resumeText}}}};
+        const QJsonObject session{{"id", "s"},
+                                  {"role", "Firmware"},
+                                  {"experience", "OUTDATED-BACKGROUND-MUST-NOT-REPLACE-RESUME"},
+                                  {"preparation", prep}};
+        const QJsonObject question{{"id", "q"}, {"text", QStringLiteral("讲讲你在 DSP 项目里的职责")}};
+        const auto request = InterviewLogic::answer(session, question, {}, config);
+        const auto input = request.messages.last().toObject()["content"].toString();
+        QVERIFY2(input.contains(resumeText),
+                 "Reference answers must include the complete session resume, not just the old summary");
+        QVERIFY(input.contains("candidate.pdf"));
+        QVERIFY(!input.contains("OUTDATED-BACKGROUND-MUST-NOT-REPLACE-RESUME"));
+        QVERIFY(input.contains(question["text"].toString()));
+        const auto instruction = request.messages.first().toObject()["content"].toString();
+        QVERIFY(instruction.contains(QStringLiteral("优先结合简历")));
+        QVERIFY(instruction.contains(QStringLiteral("不虚构")));
+        QVERIFY(instruction.contains(QStringLiteral("不输出分析过程")));
+        QVERIFY(instruction.contains(QStringLiteral("第一人称")));
+        QCOMPARE(request.config.provider, provider);
+        QCOMPARE(request.sessionId, QString("s"));
+        QCOMPARE(request.questionId, QString("q"));
+    }
+    void referenceAnswerCanUseLegacyPreparationBackground() {
+        const QJsonObject prep{{"experience", QStringLiteral("旧版真实经历：参与 RTOS 驱动开发")}};
+        const QJsonObject session{{"id", "s"}, {"preparation", prep}};
+        const auto request = InterviewLogic::answer(session, {{"id", "q"}, {"text", "RTOS?"}}, {}, {});
+        QVERIFY(request.messages.last().toObject()["content"].toString().contains(
+            QStringLiteral("旧版真实经历：参与 RTOS 驱动开发")));
+    }
     void referenceAnswerUsesShortCandidateSpeech_data() {
         QTest::addColumn<QString>("provider");
         for (auto name : {"OpenAI", "ChatGPT", "DeepSeek"})
