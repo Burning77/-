@@ -20,6 +20,7 @@ class SettingsDialog : public QDialog {
     QComboBox *selected;
     TextClient client;
     QComboBox *accounts = nullptr, *planModels = nullptr, *speechMode = nullptr;
+    QComboBox *reasoningEffort = nullptr;
     QLineEdit *localModel = nullptr;
     QLabel *planStatus = nullptr;
     QComboBox *deepSeekMode = nullptr;

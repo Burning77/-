@@ -40,6 +40,13 @@ SettingsDialog::SettingsDialog(QWidget *p) : QDialog(p), client(this) {
     accounts->setObjectName("chatgptAccount");
     planModels = new QComboBox;
     planModels->setObjectName("chatgptModel");
+    reasoningEffort = new QComboBox;
+    reasoningEffort->setObjectName("chatgptReasoningEffort");
+    reasoningEffort->addItem(QStringLiteral("默认（由模型决定）"), QString());
+    for (const auto &effort : {"low", "medium", "high", "xhigh", "max"})
+        reasoningEffort->addItem(QString::fromLatin1(effort), QString::fromLatin1(effort));
+    reasoningEffort->setCurrentIndex(
+        reasoningEffort->findData(AppSettings().config("ChatGPT").reasoningEffort));
     planStatus = new QLabel;
     planStatus->setWordWrap(true);
     planStatus->setTextFormat(Qt::PlainText);
@@ -55,6 +62,7 @@ SettingsDialog::SettingsDialog(QWidget *p) : QDialog(p), client(this) {
     planForm->addRow(addAccount);
     planForm->addRow(logout);
     planForm->addRow(QStringLiteral("可用模型"), planModels);
+    planForm->addRow(QStringLiteral("推理强度"), reasoningEffort);
     planForm->addRow(modelRefresh);
     planForm->addRow(testPlan);
     planForm->addRow(usage);
@@ -351,9 +359,11 @@ bool SettingsDialog::save() {
     if (speechMode)
         AppSettings().saveLocalTranscription(speechMode->currentData().toString(),
                                              localModel->text().trimmed());
-    if (planModels && planModels->currentIndex() >= 0) {
+    if (reasoningEffort) {
         auto c = AppSettings().config("ChatGPT");
-        c.model = planModels->currentData().toString();
+        if (planModels && planModels->currentIndex() >= 0)
+            c.model = planModels->currentData().toString();
+        c.reasoningEffort = reasoningEffort->currentData().toString();
         AppSettings().save(c);
     }
     for (auto f : fields) {

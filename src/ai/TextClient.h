@@ -17,6 +17,7 @@ class TextClient : public QObject {
     void cancel(const QString &);
     static QJsonObject payload(const TextRequest &);
   signals:
+    void webSources(QString requestId, QJsonArray sources);
     void textDelta(QString requestId, QString text);
     void finished(QString requestId);
     void failed(QString requestId, QString error);

@@ -26,6 +26,9 @@ ProviderConfig AppSettings::config(const QString &provider) const {
     if (provider == "ChatGPT") {
         c.baseUrl = "https://api.openai.com/v1";
         c.accountId = s.value("chatgpt/active").toString();
+        c.reasoningEffort = s.value("ChatGPT/reasoningEffort", "high").toString();
+        if (!QStringList{"", "low", "medium", "high", "xhigh", "max"}.contains(c.reasoningEffort))
+            c.reasoningEffort = "high";
     }
     if (provider == "DeepSeek") {
         c.accountLogin = s.value("DeepSeek/accountLogin", false).toBool();
@@ -47,6 +50,8 @@ void AppSettings::save(const ProviderConfig &c) {
     if (c.provider == "DeepSeek")
         s.setValue("DeepSeek/accountLogin", c.accountLogin);
     s.setValue(c.provider + "/model", c.model.trimmed());
+    if (c.provider == "ChatGPT")
+        s.setValue("ChatGPT/reasoningEffort", c.reasoningEffort);
 }
 void AppSettings::select(const QString &p) {
     QSettings().setValue("provider", p);

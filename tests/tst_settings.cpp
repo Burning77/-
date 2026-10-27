@@ -1,9 +1,65 @@
 #include "app/AppSettings.h"
+#include "ai/TextClient.h"
+#include "ui/SettingsDialog.h"
+#include <QDialogButtonBox>
+#include <QPushButton>
+#include <QStandardPaths>
+#include <QScopeGuard>
 #include <QTemporaryDir>
 #include <QtTest>
 class SettingsTest : public QObject {
     Q_OBJECT
   private slots:
+    void chatGptReasoningDefaultsToHighAndPreservesModel_data() {
+        QTest::addColumn<QString>("effort");
+        for (const auto &value : {"missing", "high", "medium", "low", "xhigh", "max", ""})
+            QTest::newRow(*value ? value : "model-default") << QString(value);
+    }
+    void chatGptReasoningDefaultsToHighAndPreservesModel() {
+        QFETCH(QString, effort);
+        QTemporaryDir dir;
+        QCoreApplication::setOrganizationName("InterviewTests");
+        QCoreApplication::setApplicationName("ReasoningPayload");
+        QSettings::setDefaultFormat(QSettings::IniFormat);
+        QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, dir.path());
+        QSettings().setValue("ChatGPT/model", "gpt-6.1-sol");
+        if (effort != "missing")
+            QSettings().setValue("ChatGPT/reasoningEffort", effort);
+        TextRequest request;
+        request.config = AppSettings().config("ChatGPT");
+        AppSettings().save(request.config);
+        request.config = AppSettings().config("ChatGPT");
+        const auto payload = TextClient::payload(request);
+        QCOMPARE(payload["model"].toString(), QString("gpt-6.1-sol"));
+        if (effort.isEmpty())
+            QVERIFY(!payload.contains("reasoning"));
+        else
+            QCOMPARE(payload["reasoning"].toObject()["effort"].toString(),
+                     effort == "missing" ? "high" : effort);
+    }
+    void chatGptReasoningCanBeSavedWithoutModelList() {
+        QTemporaryDir dir;
+        QCoreApplication::setOrganizationName("InterviewTests");
+        QCoreApplication::setApplicationName("ReasoningSettings");
+        QSettings::setDefaultFormat(QSettings::IniFormat);
+        QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, dir.path());
+        QStandardPaths::setTestModeEnabled(true);
+        auto restore = qScopeGuard([] { QStandardPaths::setTestModeEnabled(false); });
+        for (const auto &name : {"OpenAI/url", "DeepSeek/url", "transcription/url"})
+            QSettings().setValue(name, "https://" + newId() + ".invalid");
+        SettingsDialog dialog;
+        auto effort = dialog.findChild<QComboBox *>("chatgptReasoningEffort");
+        QVERIFY(effort);
+        QCOMPARE(effort->currentData().toString(), QString("high"));
+        effort->setCurrentIndex(effort->findData("medium"));
+        auto buttons = dialog.findChild<QDialogButtonBox *>();
+        QVERIFY(buttons);
+        buttons->button(QDialogButtonBox::Save)->click();
+        QCOMPARE(QSettings().value("ChatGPT/reasoningEffort").toString(), QString("medium"));
+        SettingsDialog reopened;
+        QCOMPARE(reopened.findChild<QComboBox *>("chatgptReasoningEffort")->currentData().toString(),
+                 QString("medium"));
+    }
     void localDefaultUpgradesChineseOnlyModelButKeepsNewCustomPath() {
         QTemporaryDir dir;
         QSettings::setDefaultFormat(QSettings::IniFormat);

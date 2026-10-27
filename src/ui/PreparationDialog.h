@@ -9,6 +9,7 @@ class QTableWidget;
 class QLabel;
 class QPushButton;
 class QTabWidget;
+class QCheckBox;
 class ResumeUploadWidget;
 class PreparationDialog : public QDialog {
     Q_OBJECT
@@ -19,17 +20,23 @@ class PreparationDialog : public QDialog {
     void done(int) override;
 
   private:
-    QString root, activeId, buffer;
+    QString root, activeId, buffer, analysisError, displayedAnalysis;
     QJsonObject data, requestInput;
+    QJsonArray researchSources;
+    ProviderConfig activeConfig;
     TextClient client;
     bool readOnly;
     bool glossaryEdited = false;
+    bool researching = false;
+    bool generatedUnsaved = false;
     QLineEdit *company, *role;
     QPlainTextEdit *job;
     ResumeUploadWidget *resume;
     QTextBrowser *analysis;
     QTableWidget *terms;
     QLabel *status;
+    QLabel *analysisNotice;
+    QCheckBox *onlineCompany;
     QPushButton *analyze, *stop, *saveButton, *addTerm, *removeTerm;
     QTabWidget *tabs;
     QJsonObject gather() const;
@@ -38,4 +45,8 @@ class PreparationDialog : public QDialog {
     void cancelAnalysis();
     bool saveDraft();
     void runAnalysis();
+    void beginPreparation();
+    void failAnalysis(const QString &error, bool generated = false);
+    void refreshAnalysisView();
+    QJsonObject analysisResearchSnapshot() const;
 };

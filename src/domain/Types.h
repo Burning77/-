@@ -15,6 +15,7 @@ struct ProviderConfig {
     QString provider = "OpenAI", baseUrl = "https://api.openai.com/v1", model;
     QString accountId;
     bool accountLogin = false;
+    QString reasoningEffort = "high";
     QString credentialId() const {
         return "InterviewAssistant/" +
                QString::fromLatin1(

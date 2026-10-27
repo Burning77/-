@@ -3,6 +3,8 @@
 #include "app/AppSettings.h"
 #include "preparation/Preparation.h"
 #include <QApplication>
+#include <QCheckBox>
+#include <QDesktopServices>
 #include <QDialogButtonBox>
 #include <QFormLayout>
 #include <QHeaderView>
@@ -28,8 +30,8 @@ PreparationDialog::PreparationDialog(QString path, QJsonObject initial, bool loc
     auto layout = new QVBoxLayout(this);
     auto help = new QLabel(
         locked ? QStringLiteral("以下为开始本次面试时保存的准备资料；编辑下次准备请结束录音后操作。")
-               : QStringLiteral("填写公司、岗位和职位描述，上传简历后使用当前所选 AI 结合简历分析；"
-                                "仅分析提供的资料，未联网查询公司。术语表可手动补充。"));
+               : QStringLiteral("填写公司、岗位和职位描述，上传简历后结合分析。联网阶段只查询公司名称；"
+                                "随后将来源、职位描述及简历发给当前 AI 分析。术语表可手动补充。"));
     help->setWordWrap(true);
     layout->addWidget(help);
     tabs = new QTabWidget;
@@ -48,6 +50,11 @@ PreparationDialog::PreparationDialog(QString path, QJsonObject initial, bool loc
     resume = new ResumeUploadWidget;
     resume->setDocument(data["resume"].toObject(), data["experience"].toString());
     form->addRow(QStringLiteral("公司"), company);
+    onlineCompany = new QCheckBox(QStringLiteral("联网核实公司信息（ChatGPT / OpenAI）"));
+    onlineCompany->setObjectName("verifyCompanyOnline");
+    onlineCompany->setChecked(data.value("verifyCompanyOnline").toBool(!locked));
+    onlineCompany->setEnabled(!locked);
+    form->addRow(QString(), onlineCompany);
     form->addRow(QStringLiteral("岗位"), role);
     form->addRow(QStringLiteral("职位描述（最多12000字）"), job);
     form->addRow(QStringLiteral("个人简历"), resume);
@@ -60,8 +67,24 @@ PreparationDialog::PreparationDialog(QString path, QJsonObject initial, bool loc
     analysis->setObjectName("prepAnalysis");
     analysis->setOpenExternalLinks(false);
     analysis->setOpenLinks(false);
-    analysis->setMarkdown(data["analysis"].toString());
-    tabs->addTab(analysis, QStringLiteral("面试前分析"));
+    auto analysisPage = new QWidget;
+    auto analysisLayout = new QVBoxLayout(analysisPage);
+    analysisLayout->setContentsMargins(0, 0, 0, 0);
+    analysisNotice = new QLabel;
+    analysisNotice->setObjectName("prepAnalysisStatus");
+    analysisNotice->setTextFormat(Qt::PlainText);
+    analysisNotice->setWordWrap(true);
+    analysisLayout->addWidget(analysisNotice);
+    analysisLayout->addWidget(analysis, 1);
+    tabs->addTab(analysisPage, QStringLiteral("面试前分析"));
+    connect(analysis, &QTextBrowser::anchorClicked, this, [this](const QUrl &url) {
+        const auto snapshot = analysisResearchSnapshot();
+        for (auto source : snapshot["companyResearch"].toObject()["sources"].toArray())
+            if (QUrl(source.toObject()["url"].toString()) == url) {
+                QDesktopServices::openUrl(url);
+                return;
+            }
+    });
     auto termPage = new QWidget;
     auto termLayout = new QVBoxLayout(termPage);
     auto termHelp = new QLabel(QStringLiteral("标准术语 / 读法或误识别别名 / "
@@ -85,6 +108,7 @@ PreparationDialog::PreparationDialog(QString path, QJsonObject initial, bool loc
     tabs->addTab(termPage, QStringLiteral("专业术语表"));
     showTerms();
     status = new QLabel;
+    status->setObjectName("preparationStatus");
     status->setWordWrap(true);
     status->setTextFormat(Qt::PlainText);
     layout->addWidget(status);
@@ -139,25 +163,40 @@ PreparationDialog::PreparationDialog(QString path, QJsonObject initial, bool loc
         buffer += text;
         if (buffer.size() > 100000) {
             cancelAnalysis();
-            status->setText(QStringLiteral("分析响应过大，已停止"));
+            failAnalysis(QStringLiteral("分析响应过大，已停止"));
         }
     });
     connect(&client, &TextClient::failed, this, [this](QString id, QString error) {
         if (id != activeId)
             return;
-        activeId.clear();
-        setBusy(false);
-        status->setText(error);
+        failAnalysis(error);
+    });
+    connect(&client, &TextClient::webSources, this, [this](QString id, QJsonArray sources) {
+        if (id == activeId && researching)
+            researchSources = sources;
     });
     connect(&client, &TextClient::finished, this, [this](QString id) {
         if (id != activeId)
             return;
         activeId.clear();
-        setBusy(false);
         QString error;
+        if (researching) {
+            researching = false;
+            requestInput["companyResearch"] =
+                QJsonObject{{"status", "completed"},      {"company", requestInput["company"]},
+                            {"text", buffer.left(16000)}, {"sources", researchSources},
+                            {"checkedAt", utcNow()},      {"provider", activeConfig.provider},
+                            {"model", activeConfig.model}};
+            if (!Preparation::hasCompanyResearch(requestInput)) {
+                failAnalysis(QStringLiteral("未取得有效的公司联网资料和来源，本次分析未更新"));
+                return;
+            }
+            beginPreparation();
+            return;
+        }
         auto result = Preparation::parseResult(buffer, &error);
         if (!error.isEmpty()) {
-            status->setText(error);
+            failAnalysis(error);
             return;
         }
         data = requestInput;
@@ -166,10 +205,16 @@ PreparationDialog::PreparationDialog(QString path, QJsonObject initial, bool loc
         data["analysisBasis"] = Preparation::fingerprint(data);
         data["termsBasis"] = Preparation::fingerprint(data);
         data["analyzedAt"] = utcNow();
-        analysis->setMarkdown(data["analysis"].toString());
+        if (Preparation::hasCompanyResearch(data))
+            data["analysisResearch"] = data["companyResearch"];
+        else
+            data.remove("analysisResearch");
+        analysisError.clear();
+        setBusy(false);
+        refreshAnalysisView();
         showTerms();
         if (!Preparation::save(root, data, &error)) {
-            status->setText(error);
+            failAnalysis(QStringLiteral("分析已生成，但保存失败：") + error, true);
             return;
         }
         tabs->setCurrentIndex(1);
@@ -177,8 +222,9 @@ PreparationDialog::PreparationDialog(QString path, QJsonObject initial, bool loc
     });
     connect(terms, &QTableWidget::itemChanged, this, [this] { glossaryEdited = true; });
     auto stale = [this] {
+        refreshAnalysisView();
         auto current = gather();
-        if (!data["analysis"].toString().isEmpty() &&
+        if (activeId.isEmpty() && analysisError.isEmpty() && !data["analysis"].toString().isEmpty() &&
             data["analysisBasis"] != Preparation::fingerprint(current))
             status->setText(QStringLiteral("资料已修改，请重新分析；旧分析和术语不会自动用于新资料"));
     };
@@ -186,17 +232,25 @@ PreparationDialog::PreparationDialog(QString path, QJsonObject initial, bool loc
     connect(role, &QLineEdit::textChanged, this, stale);
     connect(job, &QPlainTextEdit::textChanged, this, stale);
     connect(resume, &ResumeUploadWidget::documentChanged, this, stale);
+    connect(onlineCompany, &QCheckBox::toggled, this, stale);
     connect(resume, &ResumeUploadWidget::busyChanged, this, [this](bool busy) { setBusy(busy); });
     setBusy(false);
     stale();
 }
 QJsonObject PreparationDialog::gather() const {
     auto value = data;
+    // Preserve references associated with the retained report while its inputs change.
+    if (!data["analysis"].toString().isEmpty() && data["analysisBasis"] == Preparation::fingerprint(data) &&
+        Preparation::hasCompanyResearch(data))
+        value["analysisResearch"] = data["companyResearch"];
     value["company"] = company->text().trimmed();
     value["role"] = role->text().trimmed();
     value["jobDescription"] = job->toPlainText();
     value["resume"] = resume->document();
     value["experience"] = QString();
+    value["verifyCompanyOnline"] = onlineCompany->isChecked();
+    if (!onlineCompany->isChecked() || value["companyResearch"].toObject()["company"] != value["company"])
+        value.remove("companyResearch");
     QJsonArray values;
     for (int row = 0; row < terms->rowCount(); row++) {
         auto cell = [&](int column) {
@@ -233,6 +287,7 @@ void PreparationDialog::showTerms() {
     }
 }
 void PreparationDialog::setBusy(bool busy) {
+    onlineCompany->setEnabled(!busy && !readOnly);
     for (auto widget :
          {static_cast<QWidget *>(company), static_cast<QWidget *>(role), static_cast<QWidget *>(job),
           static_cast<QWidget *>(resume), static_cast<QWidget *>(terms)})
@@ -246,9 +301,14 @@ void PreparationDialog::setBusy(bool busy) {
 void PreparationDialog::cancelAnalysis() {
     auto id = activeId;
     activeId.clear();
+    researching = false;
     if (!id.isEmpty())
         client.cancel(id);
     setBusy(false);
+    if (!id.isEmpty()) {
+        analysisError = QStringLiteral("分析已停止，以下保留上次结果");
+        refreshAnalysisView();
+    }
 }
 bool PreparationDialog::saveDraft() {
     if (readOnly || resume->busy())
@@ -275,6 +335,7 @@ bool PreparationDialog::saveDraft() {
         return false;
     }
     data = value;
+    generatedUnsaved = false;
     return true;
 }
 void PreparationDialog::runAnalysis() {
@@ -288,14 +349,90 @@ void PreparationDialog::runAnalysis() {
         return;
     requestInput = data;
     buffer.clear();
-    auto request = Preparation::request(requestInput, AppSettings().textConfig());
-    requestInput["analysisProvider"] = request.config.provider;
-    requestInput["analysisModel"] = request.config.model;
+    analysisError.clear();
+    researchSources = {};
+    activeConfig = AppSettings().textConfig();
+    if (!onlineCompany->isChecked()) {
+        beginPreparation();
+        return;
+    }
+    if (activeConfig.provider != "ChatGPT" && activeConfig.provider != "OpenAI") {
+        failAnalysis(
+            QStringLiteral("当前版本联网核验支持 ChatGPT / OpenAI；请切换服务，或取消联网仅分析填写资料"));
+        return;
+    }
+    auto request = Preparation::companyResearchRequest(requestInput["company"].toString(), activeConfig);
+    researching = true;
     activeId = request.id;
     setBusy(true);
+    tabs->setCurrentIndex(1);
+    refreshAnalysisView();
+    status->setText(QStringLiteral("正在联网核实公司公开信息…"));
+    client.start(request);
+}
+void PreparationDialog::beginPreparation() {
+    buffer.clear();
+    researching = false;
+    auto request = Preparation::request(requestInput, activeConfig);
+    requestInput["analysisProvider"] = request.config.provider;
+    requestInput["analysisModel"] = request.config.model;
+    requestInput["analysisEffort"] =
+        request.config.provider == "ChatGPT" ? request.config.reasoningEffort : QString();
+    activeId = request.id;
+    setBusy(true);
+    tabs->setCurrentIndex(1);
+    refreshAnalysisView();
     status->setText(
         QStringLiteral("正在使用 %1 / %2 分析…").arg(request.config.provider, request.config.model));
     client.start(request);
+}
+void PreparationDialog::failAnalysis(const QString &error, bool generated) {
+    activeId.clear();
+    researching = false;
+    analysisError = error;
+    generatedUnsaved = generated;
+    setBusy(false);
+    refreshAnalysisView();
+    status->setText(error);
+}
+void PreparationDialog::refreshAnalysisView() {
+    QString text = data["analysis"].toString();
+    QString notice;
+    const bool stale = data["analysisBasis"] != Preparation::fingerprint(gather());
+    if (!activeId.isEmpty()) {
+        notice = researching ? QStringLiteral("正在联网核实公司（仅查询公司名称）…")
+                             : QStringLiteral("正在结合公司资料、职位描述与简历生成新分析…");
+        text = QStringLiteral("分析完成后会在这里显示本次结果。上次结果已保留；停止或失败不会覆盖它。");
+    } else if (generatedUnsaved)
+        notice = QStringLiteral("本次分析已生成但未保存：%1。请检查保存位置后点击“保存准备信息”重试。")
+                     .arg(analysisError);
+    else if (!analysisError.isEmpty())
+        notice = QStringLiteral("本次分析失败或已停止：%1。以下为上次保留的结果，并非本次新分析。")
+                     .arg(analysisError);
+    else if (text.isEmpty())
+        notice = QStringLiteral("尚未生成分析，请点击“AI 分析公司与岗位”。");
+    else if (stale)
+        notice = QStringLiteral("上次分析已过期：公司、职位描述、简历或联网资料已改变，请重新分析。");
+    else
+        notice = Preparation::hasCompanyResearch(data)
+                     ? QStringLiteral("已完成：结合公司联网来源、职位描述与简历的分析。")
+                     : QStringLiteral("已完成：仅根据填写资料与简历分析，未联网核实公司。");
+    if (activeId.isEmpty())
+        text += Preparation::researchSourcesMarkdown(analysisResearchSnapshot());
+    analysisNotice->setText(notice);
+    if (text != displayedAnalysis) {
+        analysis->setMarkdown(text);
+        displayedAnalysis = text;
+    }
+}
+QJsonObject PreparationDialog::analysisResearchSnapshot() const {
+    auto research = data["analysisResearch"].toObject();
+    if (research.isEmpty() && data["analysisBasis"] == Preparation::fingerprint(data) &&
+        Preparation::hasCompanyResearch(data))
+        research = data["companyResearch"].toObject();
+    const QJsonObject snapshot{
+        {"company", research["company"]}, {"companyResearch", research}, {"verifyCompanyOnline", true}};
+    return Preparation::hasCompanyResearch(snapshot) ? snapshot : QJsonObject{};
 }
 void PreparationDialog::done(int result) {
     cancelAnalysis();

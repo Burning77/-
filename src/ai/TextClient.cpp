@@ -86,6 +86,8 @@ QJsonObject TextClient::payload(const TextRequest &r) {
             o["response_format"] = QJsonObject{{"type", "json_object"}};
     } else {
         if (r.config.provider == "ChatGPT") {
+            if (!r.config.reasoningEffort.isEmpty())
+                o["reasoning"] = QJsonObject{{"effort", r.config.reasoningEffort}};
             QJsonArray input;
             QStringList instructions;
             for (auto value : r.messages) {
@@ -107,10 +109,24 @@ QJsonObject TextClient::payload(const TextRequest &r) {
             o["input"] = r.messages;
         if (r.jsonMode)
             o["text"] = QJsonObject{{"format", QJsonObject{{"type", "json_object"}}}};
+        if (r.operation == "company_research") {
+            o["tools"] = QJsonArray{QJsonObject{{"type", "web_search"}}};
+            o["tool_choice"] = "required";
+            o["include"] = QJsonArray{"web_search_call.action.sources"};
+            o.remove("text");
+        }
     }
     return o;
 }
 QString TextClient::start(const TextRequest &r) {
+    if (r.operation == "company_research" && r.config.provider != "ChatGPT" &&
+        r.config.provider != "OpenAI") {
+        QTimer::singleShot(0, this, [this, r] {
+            emit failed(r.id, QStringLiteral(
+                                  "当前联网核验支持 ChatGPT / OpenAI；请切换服务，或取消联网仅分析填写资料"));
+        });
+        return r.id;
+    }
     if (r.config.provider == "DeepSeek" && r.config.accountLogin) {
         auto url = QUrl(r.config.baseUrl);
         if (url.adjusted(QUrl::StripTrailingSlash).toString() != "https://api.deepseek.com" &&
@@ -210,11 +226,47 @@ QString TextClient::begin(const TextRequest &r, const QString &key, int retry) {
         SseParser parser;
         bool terminal = false, ok = false;
         bool connecting = false, encrypted = false, sent = false, sslError = false;
+        bool searched = false;
+        QJsonArray sources;
         QString error, stopReason;
         QByteArray errorBody;
         qint64 bytes = 0;
     };
     auto state = std::make_shared<State>();
+    auto collectSources = [state](const QJsonObject &item) {
+        auto add = [state](const QJsonObject &source) {
+            const auto value = source["url"].toString();
+            QUrl url(value);
+            if (value.size() > 2048 || !url.isValid() || url.host().isEmpty() || !url.userInfo().isEmpty() ||
+                (url.scheme() != "https" && url.scheme() != "http"))
+                return;
+            const auto normalized = url.toString(QUrl::FullyEncoded);
+            auto title = source["title"].toString().trimmed().left(300);
+            for (qsizetype i = 0; i < state->sources.size(); ++i) {
+                auto existing = state->sources[i].toObject();
+                if (existing["url"] == normalized) {
+                    if (!title.isEmpty() && existing["title"] == normalized) {
+                        existing["title"] = title;
+                        state->sources[i] = existing;
+                    }
+                    return;
+                }
+            }
+            if (state->sources.size() < 12)
+                state->sources.append(
+                    QJsonObject{{"url", normalized}, {"title", title.isEmpty() ? normalized : title}});
+        };
+        if (item["type"] == "web_search_call" && item["status"] == "completed") {
+            state->searched = true;
+            for (auto source : item["action"].toObject()["sources"].toArray())
+                add(source.toObject());
+        }
+        if (item["type"] == "message")
+            for (auto content : item["content"].toArray())
+                for (auto annotation : content.toObject()["annotations"].toArray())
+                    if (annotation.toObject()["type"] == "url_citation")
+                        add(annotation.toObject());
+    };
     const auto origin = url.adjusted(QUrl::RemovePath | QUrl::RemoveQuery | QUrl::RemoveFragment).toString();
     connect(reply, &QNetworkReply::socketStartedConnecting, this, [state] { state->connecting = true; });
     connect(reply, &QNetworkReply::encrypted, this, [this, state, origin] {
@@ -223,7 +275,7 @@ QString TextClient::begin(const TextRequest &r, const QString &key, int retry) {
     });
     connect(reply, &QNetworkReply::requestSent, this, [state] { state->sent = true; });
     connect(reply, &QNetworkReply::sslErrors, this, [state] { state->sslError = true; });
-    auto consume = [this, reply, r, state, key] {
+    auto consume = [this, reply, r, state, key, collectSources] {
         auto bytes = reply->readAll();
         state->bytes += bytes.size();
         if (state->bytes > 8 * 1024 * 1024) {
@@ -251,6 +303,13 @@ QString TextClient::begin(const TextRequest &r, const QString &key, int retry) {
             }
             auto o = doc.object();
             auto type = o["type"].toString(e.event);
+            if (r.operation == "company_research") {
+                if (type == "response.output_item.done")
+                    collectSources(o["item"].toObject());
+                if (type == "response.completed")
+                    for (auto item : o["response"].toObject()["output"].toArray())
+                        collectSources(item.toObject());
+            }
             if (type == "error" || o.value("error").isObject() || o.value("error").isString()) {
                 const auto detail = o.value("error");
                 state->error =
@@ -351,8 +410,19 @@ QString TextClient::begin(const TextRequest &r, const QString &key, int retry) {
         else if (!state->terminal || !state->ok)
             emit failed(r.id,
                         state->error.isEmpty() ? QStringLiteral("响应中断，已保留接收内容") : state->error);
-        else
+        else if (r.operation == "company_research" && (!state->searched || state->sources.isEmpty()))
+            emit failed(
+                r.id,
+                QStringLiteral(
+                    "联网检索未返回已完成的搜索与可用来源，未标记为已核验；可重试或取消联网仅分析填写资料"));
+        else {
+            QPointer<TextClient> guard(this);
+            if (r.operation == "company_research")
+                emit webSources(r.id, state->sources);
+            if (!guard)
+                return;
             emit finished(r.id);
+        }
         if (status == 401 && r.config.provider == "DeepSeek" && r.config.accountLogin && account)
             account->rejectToken(r.config.accountId);
         reply->deleteLater();
