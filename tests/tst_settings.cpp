@@ -1,4 +1,5 @@
 #include "app/AppSettings.h"
+#include "app/LocalModelPath.h"
 #include "ai/TextClient.h"
 #include "ui/SettingsDialog.h"
 #include <QDialogButtonBox>
@@ -9,7 +10,92 @@
 #include <QtTest>
 class SettingsTest : public QObject {
     Q_OBJECT
+    static bool createModel(const QString &path, const QString &missing = {}) {
+        if (!QDir().mkpath(path))
+            return false;
+        for (const auto &name : {"encoder-epoch-99-avg-1.int8.onnx", "decoder-epoch-99-avg-1.onnx",
+                                 "joiner-epoch-99-avg-1.int8.onnx", "tokens.txt"}) {
+            if (name == missing)
+                continue;
+            QFile file(path + "/" + name);
+            if (!file.open(QIODevice::WriteOnly) || file.write("fixture") != 7)
+                return false;
+        }
+        return true;
+    }
   private slots:
+    void emptyLocalModelSettingUsesCurrentBundle() {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        QCoreApplication::setOrganizationName("InterviewTests");
+        QCoreApplication::setApplicationName("EmptyAsrPath");
+        QSettings::setDefaultFormat(QSettings::IniFormat);
+        QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, dir.path());
+        const auto bundled = QCoreApplication::applicationDirPath() + "/local-asr/bilingual";
+        for (const auto &value : {QString(), QString("   ")}) {
+            AppSettings().saveLocalTranscription("Local", value);
+            QCOMPARE(AppSettings().localModelPath(), bundled);
+            QCOMPARE(QSettings().value("transcription/bilingualModel").toString(), value);
+        }
+    }
+    void versionedLocalModelPathMovesToCurrentBundle_data() {
+        QTest::addColumn<bool>("oldModelPresent");
+        QTest::newRow("old-release-deleted") << false;
+        QTest::newRow("old-release-still-present") << true;
+    }
+    void versionedLocalModelPathMovesToCurrentBundle() {
+        QFETCH(bool, oldModelPresent);
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const auto appDir = dir.path() + "/InterviewAssistant-0.7.1";
+        const auto bundled = appDir + "/local-asr/bilingual";
+        const auto old = dir.path() + "/InterviewAssistant-0.5.0/local-asr/bilingual";
+        QVERIFY(createModel(bundled));
+        if (oldModelPresent)
+            QVERIFY(createModel(old));
+        QCOMPARE(resolveLocalModelPath(old, appDir), bundled);
+        auto windowsPath = old;
+        windowsPath.replace('/', '\\');
+        QCOMPARE(resolveLocalModelPath(windowsPath + "\\", appDir), bundled);
+    }
+    void customLocalModelPathsArePreserved_data() {
+        QTest::addColumn<bool>("modelPresent");
+        QTest::newRow("custom-model-present") << true;
+        QTest::newRow("custom-model-missing") << false;
+    }
+    void customLocalModelPathsArePreserved() {
+        QFETCH(bool, modelPresent);
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const auto appDir = dir.path() + "/InterviewAssistant-0.7.1";
+        const auto custom = dir.path() + "/custom-models/local-asr/bilingual";
+        QVERIFY(createModel(appDir + "/local-asr/bilingual"));
+        if (modelPresent)
+            QVERIFY(createModel(custom));
+        QCOMPARE(resolveLocalModelPath(custom, appDir), custom);
+    }
+    void incompleteCurrentBundleDoesNotReplaceConfiguredPath_data() {
+        QTest::addColumn<QString>("missing");
+        QTest::newRow("encoder") << QString("encoder-epoch-99-avg-1.int8.onnx");
+        QTest::newRow("decoder") << QString("decoder-epoch-99-avg-1.onnx");
+        QTest::newRow("joiner") << QString("joiner-epoch-99-avg-1.int8.onnx");
+        QTest::newRow("tokens") << QString("tokens.txt");
+        QTest::newRow("empty-file") << QString();
+    }
+    void incompleteCurrentBundleDoesNotReplaceConfiguredPath() {
+        QFETCH(QString, missing);
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const auto appDir = dir.path() + "/InterviewAssistant-0.7.1";
+        const auto bundled = appDir + "/local-asr/bilingual";
+        const auto old = dir.path() + "/InterviewAssistant-0.5.0/local-asr/bilingual";
+        QVERIFY(createModel(bundled, missing));
+        if (missing.isEmpty()) {
+            QFile tokens(bundled + "/tokens.txt");
+            QVERIFY(tokens.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        }
+        QCOMPARE(resolveLocalModelPath(old, appDir), old);
+    }
     void chatGptReasoningDefaultsToHighAndPreservesModel_data() {
         QTest::addColumn<QString>("effort");
         for (const auto &value : {"missing", "high", "medium", "low", "xhigh", "max", ""})

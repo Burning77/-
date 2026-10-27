@@ -1,14 +1,13 @@
 #include "AppSettings.h"
+#include "LocalModelPath.h"
 #include "auth/DeepSeekAccount.h"
 #include <QCoreApplication>
 QString AppSettings::transcriptionMode() const {
     return QSettings().value("transcription/mode", "Local").toString();
 }
 QString AppSettings::localModelPath() const {
-    return QSettings()
-        .value("transcription/bilingualModel",
-               QCoreApplication::applicationDirPath() + "/local-asr/bilingual")
-        .toString();
+    return resolveLocalModelPath(QSettings().value("transcription/bilingualModel").toString(),
+                                 QCoreApplication::applicationDirPath());
 }
 void AppSettings::saveLocalTranscription(QString mode, QString path) {
     QSettings s;
