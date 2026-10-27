@@ -26,6 +26,7 @@
 #include <QShowEvent>
 #include <QWindow>
 #include <QScrollArea>
+#include <QStyleHints>
 #include <algorithm>
 namespace {
 struct ListScrollPosition {
@@ -125,6 +126,24 @@ static QString stateName(QString s) {
 }
 MainWindow::MainWindow(QWidget *parent, QString dataRoot)
     : QMainWindow(parent), controller(dataRoot, this), player(this), output(this) {
+    // Our styles use light surfaces. Give unstyled viewports, dialogs and native
+    // controls the same palette, regardless of the desktop's light/dark scheme.
+    QGuiApplication::styleHints()->setColorScheme(Qt::ColorScheme::Light);
+    QPalette light(QColor(Qt::white), QColor("#f3f6fb"));
+    for (auto role : {QPalette::WindowText, QPalette::Text, QPalette::ButtonText, QPalette::ToolTipText})
+        light.setColor(role, QColor("#243047"));
+    light.setColor(QPalette::Base, Qt::white);
+    light.setColor(QPalette::AlternateBase, QColor("#eef4ff"));
+    light.setColor(QPalette::ToolTipBase, Qt::white);
+    light.setColor(QPalette::Highlight, QColor("#dbeafe"));
+    light.setColor(QPalette::HighlightedText, QColor("#17396d"));
+    light.setColor(QPalette::Accent, QColor("#2563eb"));
+    light.setColor(QPalette::Link, QColor("#2563eb"));
+    light.setColor(QPalette::LinkVisited, QColor("#6d49a8"));
+    light.setColor(QPalette::PlaceholderText, QColor("#8793a7"));
+    for (auto role : {QPalette::WindowText, QPalette::Text, QPalette::ButtonText})
+        light.setColor(QPalette::Disabled, role, QColor("#a4adba"));
+    QApplication::setPalette(light);
     setWindowTitle(QStringLiteral("面试助手 · 实时记录与复盘 · ") + QStringLiteral(INTERVIEW_APP_VERSION));
     resize(1280, 780);
     placementTimer.setSingleShot(true);

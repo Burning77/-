@@ -13,6 +13,10 @@
 #include <QWindow>
 #include <QMessageBox>
 #include <QScrollBar>
+#include <QScrollArea>
+#include <QScopeGuard>
+#include <QStyleHints>
+#include <QStandardPaths>
 #include <QtTest>
 static QPushButton *button(QWidget &w, const QString &text) {
     for (auto b : w.findChildren<QPushButton *>())
@@ -70,6 +74,73 @@ class WindowTest : public QObject {
     void initTestCase() {
         QFontDatabase::addApplicationFont(QStringLiteral("C:/Windows/Fonts/msyh.ttc"));
         QApplication::setFont(QFont("Microsoft YaHei", 9));
+    }
+    void lightInterfaceDoesNotInheritDarkDesktopBackground_data() {
+        QTest::addColumn<bool>("darkDesktop");
+        QTest::newRow("dark-desktop") << true;
+        QTest::newRow("light-desktop") << false;
+    }
+    void lightInterfaceDoesNotInheritDarkDesktopBackground() {
+        QFETCH(bool, darkDesktop);
+        const auto originalPalette = QApplication::palette();
+        const auto originalScheme = QGuiApplication::styleHints()->colorScheme();
+        const auto originalOrganization = QCoreApplication::organizationName();
+        const auto originalApplication = QCoreApplication::applicationName();
+        const auto originalFormat = QSettings::defaultFormat();
+        QTemporaryDir dir(QDir::currentPath() + "/theme-XXXXXX");
+        QVERIFY(dir.isValid());
+        QStandardPaths::setTestModeEnabled(true);
+        QCoreApplication::setOrganizationName("InterviewThemeTests");
+        QCoreApplication::setApplicationName("Palette");
+        QSettings::setDefaultFormat(QSettings::IniFormat);
+        QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, dir.path());
+        auto restore = qScopeGuard([&] {
+            QGuiApplication::styleHints()->setColorScheme(originalScheme);
+            QApplication::setPalette(originalPalette);
+            QCoreApplication::setOrganizationName(originalOrganization);
+            QCoreApplication::setApplicationName(originalApplication);
+            QSettings::setDefaultFormat(originalFormat);
+            QStandardPaths::setTestModeEnabled(false);
+        });
+        for (const auto &key : {"OpenAI/url", "DeepSeek/url", "transcription/url"})
+            QSettings().setValue(key, "https://" + newId() + ".invalid");
+        QPalette desktop;
+        desktop.setColor(QPalette::Window, darkDesktop ? QColor("#202020") : Qt::white);
+        desktop.setColor(QPalette::Base, darkDesktop ? QColor("#181818") : Qt::white);
+        desktop.setColor(QPalette::WindowText, darkDesktop ? Qt::white : Qt::black);
+        desktop.setColor(QPalette::Text, darkDesktop ? Qt::white : Qt::black);
+        desktop.setColor(QPalette::Button, darkDesktop ? QColor("#333333") : Qt::white);
+        desktop.setColor(QPalette::ButtonText, darkDesktop ? Qt::white : Qt::black);
+        QApplication::setPalette(desktop);
+        MainWindow w(nullptr, dir.path() + "/data");
+        w.show();
+        QTest::qWait(60);
+        w.resize(1280, 780);
+        auto scroll = qobject_cast<QScrollArea *>(w.centralWidget());
+        QVERIFY(scroll);
+        const auto background = scroll->viewport()->palette().color(QPalette::Window);
+        auto caption = w.findChild<QLabel *>("caption");
+        QVERIFY(caption);
+        const auto foreground = caption->palette().color(QPalette::WindowText);
+        const auto image = scroll->viewport()->grab().toImage();
+        const auto renderedBackground = image.pixelColor(2, 2);
+        auto screenshot = qEnvironmentVariable("INTERVIEW_THEME_SCREENSHOT");
+        if (!screenshot.isEmpty())
+            QVERIFY(w.grab().save(screenshot + "/theme-" + QTest::currentDataTag() + ".png"));
+        QVERIFY2(background.lightnessF() > 0.8, "Main scroll area inherited a dark desktop background");
+        QVERIFY2(renderedBackground.lightnessF() > 0.8, "Main scroll area painted a dark background");
+        QVERIFY(foreground.lightnessF() < 0.4);
+        SettingsDialog settings(&w);
+        settings.show();
+        QTest::qWait(20);
+        if (!screenshot.isEmpty())
+            QVERIFY(settings.grab().save(screenshot + "/theme-settings-" + QTest::currentDataTag() + ".png"));
+        QVERIFY(settings.palette().color(QPalette::Window).lightnessF() > 0.8);
+        for (auto group : {QPalette::Active, QPalette::Inactive, QPalette::Disabled}) {
+            const auto palette = settings.palette();
+            QVERIFY(palette.color(group, QPalette::Base).lightnessF() > 0.8);
+            QVERIFY(palette.color(group, QPalette::Text).lightnessF() < 0.8);
+        }
     }
     void firstShowCentersOnPrimaryAndKeepsLaterMoves() {
         QTemporaryDir dir(QDir::currentPath() + "/position-XXXXXX");
