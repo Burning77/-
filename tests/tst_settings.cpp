@@ -2,6 +2,7 @@
 #include "app/LocalModelPath.h"
 #include "ai/TextClient.h"
 #include "ui/SettingsDialog.h"
+#include "ui/PlaybackDeviceSelector.h"
 #include <QDialogButtonBox>
 #include <QPushButton>
 #include <QStandardPaths>
@@ -24,6 +25,34 @@ class SettingsTest : public QObject {
         return true;
     }
   private slots:
+    void playbackSelectionUsesSystemDefaultOrSavedDevice_data() {
+        QTest::addColumn<QString>("preferred");
+        QTest::addColumn<QString>("expected");
+        QTest::newRow("first-virtual-device-is-not-default") << QString() << QString();
+        QTest::newRow("remember-realtek") << QString("realtek") << QString("realtek");
+        QTest::newRow("explicit-virtual-device") << QString("steam") << QString("steam");
+        QTest::newRow("other-computer-or-unplugged-device") << QString("missing") << QString();
+    }
+    void playbackSelectionUsesSystemDefaultOrSavedDevice() {
+        QFETCH(QString, preferred);
+        QFETCH(QString, expected);
+        QComboBox combo;
+        populatePlaybackDevices(combo, {{"steam", "Steam Streaming Speakers"}, {"realtek", "Realtek"}},
+                                preferred);
+        QCOMPARE(combo.currentData().toString(), expected);
+        QCOMPARE(combo.count(), 3);
+        QCOMPARE(combo.itemData(0).toString(), QString());
+    }
+    void playbackDeviceRefreshKeepsIdentityAcrossEnumerationOrder() {
+        QComboBox combo;
+        populatePlaybackDevices(combo, {{"steam", "Steam"}, {"realtek", "Realtek"}}, "realtek");
+        QCOMPARE(combo.currentData().toString(), QString("realtek"));
+        populatePlaybackDevices(combo, {{"realtek", "Realtek"}, {"steam", "Steam"}}, "realtek");
+        QCOMPARE(combo.currentData().toString(), QString("realtek"));
+        populatePlaybackDevices(combo, {}, "realtek");
+        QCOMPARE(combo.currentData().toString(), QString());
+        QCOMPARE(combo.count(), 1);
+    }
     void emptyLocalModelSettingUsesCurrentBundle() {
         QTemporaryDir dir;
         QVERIFY(dir.isValid());

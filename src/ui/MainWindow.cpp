@@ -2,6 +2,7 @@
 #include "SettingsDialog.h"
 #include "PreparationDialog.h"
 #include "ResumeUploadWidget.h"
+#include "PlaybackDeviceSelector.h"
 #include "preparation/Preparation.h"
 #include "ai/InterviewLogic.h"
 #include "app/AppSettings.h"
@@ -259,6 +260,12 @@ MainWindow::MainWindow(QWidget *parent, QString dataRoot)
     connect(autoAnswer, &QCheckBox::toggled, this, [this](bool b) { controller.autoAnswer = b; });
     auto audioRow = new QHBoxLayout;
     remoteDevice = new QComboBox;
+    remoteDevice->setObjectName("remotePlaybackDevice");
+    remoteDevice->setToolTip(QStringLiteral("选择 BOSS / 会议浏览器实际使用的耳机或扬声器。系统默认设备在"
+                                            "开始录音时确定，更换设备后请重新开始录音。"));
+    connect(remoteDevice, &QComboBox::activated, this, [this] {
+        QSettings().setValue("audio/remotePlaybackDevice", remoteDevice->currentData().toString());
+    });
     micDevice = new QComboBox;
     remoteStatus = new QLabel(QStringLiteral("远端：待连接"));
     micStatus = new QLabel(QStringLiteral("麦克风：待连接"));
@@ -488,14 +495,11 @@ MainWindow::MainWindow(QWidget *parent, QString dataRoot)
 void MainWindow::devices() {
     if (controller.recording())
         return;
-    remoteDevice->clear();
     micDevice->clear();
-    for (auto d : WasapiLoopbackSource::devices())
-        remoteDevice->addItem(d.name, d.id);
+    populatePlaybackDevices(*remoteDevice, WasapiLoopbackSource::devices(),
+                            QSettings().value("audio/remotePlaybackDevice").toString());
     for (auto d : QMediaDevices::audioInputs())
         micDevice->addItem(d.description(), d.id());
-    if (remoteDevice->count() == 0)
-        remoteDevice->addItem(QStringLiteral("系统默认播放设备"), QString());
     if (micDevice->count() == 0)
         micDevice->addItem(QStringLiteral("未找到麦克风"), QByteArray());
 }

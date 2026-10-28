@@ -71,6 +71,57 @@ class WindowIdleSource : public AudioSource {
 class WindowTest : public QObject {
     Q_OBJECT
   private slots:
+    void playbackChoiceIsRememberedAndPassedToCapture() {
+        QTemporaryDir dir(QDir::currentPath() + "/playback-choice-XXXXXX");
+        QVERIFY(dir.isValid());
+        const auto organization = QCoreApplication::organizationName();
+        const auto application = QCoreApplication::applicationName();
+        const auto format = QSettings::defaultFormat();
+        QCoreApplication::setOrganizationName("InterviewPlaybackTests");
+        QCoreApplication::setApplicationName("Selection");
+        QSettings::setDefaultFormat(QSettings::IniFormat);
+        QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, dir.path());
+        QStandardPaths::setTestModeEnabled(true);
+        auto restore = qScopeGuard([&] {
+            QCoreApplication::setOrganizationName(organization);
+            QCoreApplication::setApplicationName(application);
+            QSettings::setDefaultFormat(format);
+            QStandardPaths::setTestModeEnabled(false);
+        });
+        MainWindow w(nullptr, dir.path() + "/data");
+        auto combo = w.findChild<QComboBox *>("remotePlaybackDevice");
+        QVERIFY(combo);
+        auto controller = w.findChild<SessionController *>();
+        QVERIFY(controller);
+        controller->autoExtract = false;
+        controller->autoAnswer = false;
+        QString captured("not-started");
+        controller->audio.renderFactory = [&](const QString &id) -> AudioSource * {
+            captured = id;
+            return new WindowIdleSource;
+        };
+        controller->audio.microphoneFactory = [](const QByteArray &) -> AudioSource * {
+            return new WindowIdleSource;
+        };
+        w.findChild<QPushButton *>("startButton")->click();
+        QVERIFY(controller->recording());
+        QCOMPARE(captured, QString());
+        QVERIFY(controller->discardRecording());
+        combo->addItem("Fixture Realtek", "fixture-playback");
+        combo->setCurrentIndex(combo->count() - 1);
+        QVERIFY(QMetaObject::invokeMethod(combo, "activated", Q_ARG(int, combo->currentIndex())));
+        QCOMPARE(QSettings().value("audio/remotePlaybackDevice").toString(), QString("fixture-playback"));
+        w.findChild<QPushButton *>("startButton")->click();
+        QCOMPARE(captured, QString("fixture-playback"));
+        QVERIFY(controller->discardRecording());
+        button(w, QStringLiteral("刷新设备"))->click();
+        QCOMPARE(combo->currentData().toString(), QString());
+        QCOMPARE(QSettings().value("audio/remotePlaybackDevice").toString(), QString("fixture-playback"));
+        MainWindow reopened(nullptr, dir.path() + "/reopened");
+        QCOMPARE(reopened.findChild<QComboBox *>("remotePlaybackDevice")->currentData().toString(),
+                 QString());
+        QCOMPARE(QSettings().value("audio/remotePlaybackDevice").toString(), QString("fixture-playback"));
+    }
     void initTestCase() {
         QFontDatabase::addApplicationFont(QStringLiteral("C:/Windows/Fonts/msyh.ttc"));
         QApplication::setFont(QFont("Microsoft YaHei", 9));
