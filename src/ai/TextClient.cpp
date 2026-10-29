@@ -116,9 +116,54 @@ QJsonObject TextClient::payload(const TextRequest &r) {
             o.remove("text");
         }
     }
+    if (!r.imagePng.isEmpty()) {
+        const auto name = r.config.provider == "DeepSeek" ? "messages" : "input";
+        auto messages = o[name].toArray();
+        for (qsizetype i = messages.size(); i > 0; --i) {
+            auto message = messages[i - 1].toObject();
+            if (message["role"] != "user")
+                continue;
+            QJsonArray parts = message["content"].toArray();
+            if (!message["content"].isArray())
+                parts.append(QJsonObject{{"type", r.config.provider == "DeepSeek" ? "text" : "input_text"},
+                                         {"text", message["content"]}});
+            const auto base64 = QString::fromLatin1(r.imagePng.toBase64());
+            if (r.config.provider == "DeepSeek" && r.config.accountLogin)
+                parts.append(QJsonObject{
+                    {"type", "image"},
+                    {"source",
+                     QJsonObject{{"type", "base64"}, {"media_type", "image/png"}, {"data", base64}}}});
+            else if (r.config.provider == "DeepSeek")
+                parts.append(QJsonObject{{"type", "image_url"},
+                                         {"image_url", QJsonObject{{"url", "data:image/png;base64," + base64},
+                                                                   {"detail", "high"}}}});
+            else
+                parts.append(QJsonObject{{"type", "input_image"},
+                                         {"image_url", "data:image/png;base64," + base64},
+                                         {"detail", "high"}});
+            message["content"] = parts;
+            messages[i - 1] = message;
+            break;
+        }
+        o[name] = messages;
+    }
     return o;
 }
 QString TextClient::start(const TextRequest &r) {
+    if (!r.imagePng.isEmpty()) {
+        QString error;
+        if (r.imagePng.size() > 10 * 1024 * 1024 ||
+            !r.imagePng.startsWith(QByteArray::fromHex("89504e470d0a1a0a")))
+            error = QStringLiteral("截图必须为有效的PNG，且不超过10MB，请重新截图");
+        else if (r.config.provider == "DeepSeek" && r.config.model != "deepseek-flash" &&
+                 r.config.model != "deepseek-v4-flash-vision-exp")
+            error = QStringLiteral("当前DeepSeek模型不支持本软件的截图输入，请选择 deepseek-flash "
+                                   "或支持图片的 ChatGPT / OpenAI 模型");
+        if (!error.isEmpty()) {
+            QTimer::singleShot(0, this, [this, id = r.id, error] { emit failed(id, error); });
+            return r.id;
+        }
+    }
     if (r.operation == "company_research" && r.config.provider != "ChatGPT" &&
         r.config.provider != "OpenAI") {
         QTimer::singleShot(0, this, [this, r] {

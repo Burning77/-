@@ -19,6 +19,8 @@ class SessionController : public QObject {
     AudioController audio;
     QString createSession(QString title, QString role, QString experience, QJsonObject preparation = {});
     QString addQuestion(QString sid, QString text, bool generate = true);
+    QString addScreenshotQuestion(QString sid, QByteArray png, QString prompt);
+    QByteArray screenshotForQuestion(QString sid, QString questionId, QString *error = nullptr) const;
     QString answerQuestion(QString sid, QString questionId, const ProviderConfig &);
     QString review(QString sid);
     void cancel(QString sid);
@@ -53,6 +55,7 @@ class SessionController : public QObject {
         TextRequest request;
         QJsonObject record;
         QList<QJsonObject> sources;
+        QJsonObject screenshot;
     };
     QHash<QString, Job> jobs;
     QQueue<QString> answers;

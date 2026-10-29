@@ -89,6 +89,27 @@ GlobalHotkey::~GlobalHotkey() {
 QKeySequence GlobalHotkey::defaultSequence() {
     return QKeySequence("Ctrl+Alt+Space");
 }
+HotkeyResult GlobalHotkey::clear() {
+    QStringList errors;
+    if (activeId) {
+        const auto result = invoke(activeId, currentModifiers, currentKey, false);
+        if (result.ok)
+            activeId = 0;
+        else
+            errors.append(result.error);
+    }
+    for (auto it = pendingRemoval.begin(); it != pendingRemoval.end();) {
+        const auto result = invoke(it.key(), it.value().first, it.value().second, false);
+        if (result.ok)
+            it = pendingRemoval.erase(it);
+        else {
+            errors.append(result.error);
+            ++it;
+        }
+    }
+    emit changed();
+    return {errors.isEmpty(), errors.join(QStringLiteral("；"))};
+}
 HotkeyResult GlobalHotkey::validate(const QKeySequence &sequence) {
     if (!translate(sequence).key)
         return {false, QStringLiteral("请设置单组 Ctrl/Alt + 字母、数字或空格，或 F1–F11/F13–F24。"

@@ -11,6 +11,7 @@ class BossVisibility : public QObject, public QAbstractNativeEventFilter {
     explicit BossVisibility(QWidget *root);
     ~BossVisibility() override;
     void toggle();
+    void setPrimaryWindow(QWidget *window);
     bool hidden() const {
         return hiding;
     }
@@ -21,6 +22,7 @@ class BossVisibility : public QObject, public QAbstractNativeEventFilter {
 
   private:
     QPointer<QWidget> root;
+    QPointer<QWidget> primary;
     QPointer<QWidget> active;
     QList<QPointer<QWidget>> windows;
     bool hiding = false;

@@ -4,9 +4,68 @@
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QtTest>
+#include <QBuffer>
+#include <QImage>
 class TextClientTest : public QObject {
     Q_OBJECT
   private slots:
+    void textOnlyDeepSeekModelNeverSilentlyDropsScreenshot() {
+        QImage image(12, 12, QImage::Format_RGB32);
+        image.fill(Qt::white);
+        TextRequest request;
+        QBuffer buffer(&request.imagePng);
+        buffer.open(QIODevice::WriteOnly);
+        QVERIFY(image.save(&buffer, "PNG"));
+        request.config.provider = "DeepSeek";
+        request.config.model = "deepseek-v4-pro";
+        request.messages = {QJsonObject{{"role", "user"}, {"content", "answer image"}}};
+        TextClient client;
+        int reads = 0;
+        client.keyReader = [&](const QString &) {
+            ++reads;
+            return QString("fixture");
+        };
+        QSignalSpy failed(&client, &TextClient::failed);
+        client.start(request);
+        QTRY_COMPARE(failed.size(), 1);
+        QCOMPARE(reads, 0);
+        QVERIFY(failed[0][1].toString().contains("deepseek-flash"));
+    }
+    void screenshotUsesImageBlocks_data() {
+        QTest::addColumn<QString>("provider");
+        QTest::addColumn<bool>("account");
+        QTest::newRow("OpenAI") << QString("OpenAI") << false;
+        QTest::newRow("ChatGPT") << QString("ChatGPT") << false;
+        QTest::newRow("DeepSeek-key") << QString("DeepSeek") << false;
+        QTest::newRow("DeepSeek-account") << QString("DeepSeek") << true;
+    }
+    void screenshotUsesImageBlocks() {
+        QFETCH(QString, provider);
+        QFETCH(bool, account);
+        TextRequest request;
+        request.config.provider = provider;
+        request.config.accountLogin = account;
+        request.imagePng = "png";
+        request.messages = {QJsonObject{{"role", "system"}, {"content", "coach"}},
+                            QJsonObject{{"role", "user"}, {"content", "answer this image"}}};
+        const auto body = TextClient::payload(request);
+        const auto input = body[provider == "DeepSeek" ? "messages" : "input"].toArray();
+        const auto blocks = input.last().toObject()["content"].toArray();
+        QCOMPARE(blocks.size(), 2);
+        if (provider != "DeepSeek") {
+            QCOMPARE(blocks[0].toObject()["type"].toString(), QString("input_text"));
+            QCOMPARE(blocks[1].toObject()["type"].toString(), QString("input_image"));
+            QCOMPARE(blocks[1].toObject()["image_url"].toString(), QString("data:image/png;base64,cG5n"));
+        } else if (account) {
+            QCOMPARE(blocks[1].toObject()["type"].toString(), QString("image"));
+            QCOMPARE(blocks[1].toObject()["source"].toObject()["type"].toString(), QString("base64"));
+            QCOMPARE(blocks[1].toObject()["source"].toObject()["data"].toString(), QString("cG5n"));
+        } else {
+            QCOMPARE(blocks[1].toObject()["type"].toString(), QString("image_url"));
+            QCOMPARE(blocks[1].toObject()["image_url"].toObject()["url"].toString(),
+                     QString("data:image/png;base64,cG5n"));
+        }
+    }
     void deepSeekAccountUsesMessagesAndNoApiKeyFallback() {
         TextRequest r;
         r.config.provider = "DeepSeek";

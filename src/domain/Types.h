@@ -30,5 +30,6 @@ struct TextRequest {
     QString id = newId(), sessionId, questionId, operation;
     ProviderConfig config;
     QJsonArray messages;
+    QByteArray imagePng;
     bool jsonMode = false;
 };

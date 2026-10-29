@@ -19,6 +19,7 @@ class GlobalHotkey : public QObject, public QAbstractNativeEventFilter {
     static QKeySequence defaultSequence();
     static HotkeyResult validate(const QKeySequence &sequence);
     HotkeyResult setSequence(const QKeySequence &sequence);
+    HotkeyResult clear();
     QKeySequence sequence() const {
         return current;
     }

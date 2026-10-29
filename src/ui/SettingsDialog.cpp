@@ -1,6 +1,7 @@
 #include "SettingsDialog.h"
 #include "app/CredentialStore.h"
 #include "app/GlobalHotkey.h"
+#include "capture/CaptureShortcuts.h"
 #include "transcription/RealtimeTranscriber.h"
 #include "transcription/LocalTranscriber.h"
 #include "auth/ChatGptAccount.h"
@@ -278,6 +279,29 @@ SettingsDialog::SettingsDialog(QWidget *p, GlobalHotkey *hotkey) : QDialog(p), c
                                   "老板键隐藏本机窗口；“远程隐藏”用于捕获排除，两者独立。"));
     shortcutHelp->setWordWrap(true);
     shortcutForm->addRow(shortcutHelp);
+    selectionCopyEditor = new QKeySequenceEdit(CaptureShortcuts::selection());
+    selectionCopyEditor->setObjectName("selectionCopySequence");
+    regionCaptureEditor = new QKeySequenceEdit(CaptureShortcuts::region());
+    regionCaptureEditor->setObjectName("regionCaptureSequence");
+    for (auto editor : {selectionCopyEditor, regionCaptureEditor}) {
+        editor->setMaximumSequenceLength(1);
+        editor->setClearButtonEnabled(true);
+    }
+    savedSelectionCopy = selectionCopyEditor->keySequence();
+    savedRegionCapture = regionCaptureEditor->keySequence();
+    auto applyCapture = new QPushButton(QStringLiteral("保存取词 / 截图快捷键"));
+    applyCapture->setObjectName("applyCaptureShortcuts");
+    captureShortcutStatus =
+        new QLabel(QStringLiteral("仅笔试模式注册；结束后释放。默认 Alt+C 取词、Ctrl+Alt+A "
+                                  "区域截图。与其他软件冲突时会在进入模式后提示，请改用其他按键。"));
+    captureShortcutStatus->setObjectName("captureShortcutStatus");
+    captureShortcutStatus->setWordWrap(true);
+    captureShortcutStatus->setTextFormat(Qt::PlainText);
+    shortcutForm->addRow(QStringLiteral("笔试取词"), selectionCopyEditor);
+    shortcutForm->addRow(QStringLiteral("笔试区域截图"), regionCaptureEditor);
+    shortcutForm->addRow(applyCapture);
+    shortcutForm->addRow(captureShortcutStatus);
+    connect(applyCapture, &QPushButton::clicked, this, [this] { saveCaptureShortcuts(); });
     connect(applyKey, &QPushButton::clicked, this, [this] { saveBossKey(); });
     connect(defaultKey, &QPushButton::clicked, this,
             [this] { bossKeyEditor->setKeySequence(GlobalHotkey::defaultSequence()); });
@@ -297,6 +321,13 @@ SettingsDialog::SettingsDialog(QWidget *p, GlobalHotkey *hotkey) : QDialog(p), c
 }
 bool SettingsDialog::saveBossKey() {
     const auto sequence = bossKeyEditor->keySequence();
+    const auto distinct =
+        CaptureShortcuts::validate(CaptureShortcuts::selection(), CaptureShortcuts::region(), sequence);
+    if (!distinct.ok) {
+        bossKeyStatus->setText(distinct.error);
+        pages->setCurrentIndex(shortcutsPage);
+        return false;
+    }
     const auto result = bossKey ? bossKey->setSequence(sequence) : GlobalHotkey::validate(sequence);
     if (!result.ok) {
         bossKeyStatus->setText(result.error + QStringLiteral("；快捷键设置未更改"));
@@ -307,6 +338,29 @@ bool SettingsDialog::saveBossKey() {
     savedBossKey = sequence;
     bossKeyStatus->setText(QStringLiteral("老板键已保存：%1；按一次隐藏，再按一次调出")
                                .arg(sequence.toString(QKeySequence::NativeText)));
+    return true;
+}
+bool SettingsDialog::saveCaptureShortcuts() {
+    const auto copy = selectionCopyEditor->keySequence(), shot = regionCaptureEditor->keySequence();
+    const auto boss = QKeySequence::fromString(
+        QSettings()
+            .value("shortcuts/bossKey", GlobalHotkey::defaultSequence().toString(QKeySequence::PortableText))
+            .toString(),
+        QKeySequence::PortableText);
+    const auto valid = CaptureShortcuts::validate(copy, shot, boss);
+    if (!valid.ok) {
+        captureShortcutStatus->setText(valid.error + QStringLiteral("；原设置保持不变"));
+        pages->setCurrentIndex(shortcutsPage);
+        return false;
+    }
+    QSettings settings;
+    settings.setValue("shortcuts/selectionCopy", copy.toString(QKeySequence::PortableText));
+    settings.setValue("shortcuts/regionCapture", shot.toString(QKeySequence::PortableText));
+    savedSelectionCopy = copy;
+    savedRegionCapture = shot;
+    captureShortcutStatus->setText(
+        QStringLiteral("已保存：%1 取词，%2 区域截图；下次进入笔试模式生效")
+            .arg(copy.toString(QKeySequence::NativeText), shot.toString(QKeySequence::NativeText)));
     return true;
 }
 void SettingsDialog::loadDeepSeekModels() {
@@ -459,7 +513,11 @@ bool SettingsDialog::save() {
     AppSettings().select(selected->currentText());
     // An unavailable optional global key must not block model settings/tests.
     // Explicit apply still retries an unchanged key after its conflict clears.
-    return bossKeyEditor->keySequence() == savedBossKey || saveBossKey();
+    if (bossKeyEditor->keySequence() != savedBossKey && !saveBossKey())
+        return false;
+    return (selectionCopyEditor->keySequence() == savedSelectionCopy &&
+            regionCaptureEditor->keySequence() == savedRegionCapture) ||
+           saveCaptureShortcuts();
 }
 void SettingsDialog::test(int index) {
     if (!save())

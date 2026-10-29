@@ -35,6 +35,10 @@ class SettingsDialog : public QDialog {
     QTabWidget *pages = nullptr;
     int shortcutsPage = -1;
     QKeySequence savedBossKey;
+    QKeySequenceEdit *selectionCopyEditor = nullptr, *regionCaptureEditor = nullptr;
+    QLabel *captureShortcutStatus = nullptr;
+    QKeySequence savedSelectionCopy, savedRegionCapture;
+    bool saveCaptureShortcuts();
     bool saveBossKey();
     void loadDeepSeekModels();
     void reloadAccounts();

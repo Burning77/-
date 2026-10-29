@@ -1,4 +1,6 @@
 #include "SessionController.h"
+#include "capture/ScreenshotStore.h"
+#include <QFile>
 #include "ai/InterviewLogic.h"
 #include "preparation/Preparation.h"
 #include "app/AppSettings.h"
@@ -209,11 +211,44 @@ QString SessionController::answerQuestion(QString sid, QString qid, const Provid
                        {"createdAt", utcNow()}};
     if (!persist("generations", record))
         return {};
-    jobs.insert(r.id, {r, record, {}});
+    jobs.insert(r.id, {r, record, {}, q["screenshot"].toObject()});
     answers.enqueue(r.id);
     emit changed(sid);
     pump();
     return r.id;
+}
+QString SessionController::addScreenshotQuestion(QString sid, QByteArray png, QString prompt) {
+    if (get("sessions", sid, sid).isEmpty())
+        return {};
+    const auto id = newId();
+    QString error;
+    const auto screenshot = ScreenshotStore::save(store.root(), sid, id, png, &error);
+    if (screenshot.isEmpty()) {
+        emit status(error);
+        return {};
+    }
+    if (!persist("questions", {{"id", id},
+                               {"sessionId", sid},
+                               {"text", prompt},
+                               {"sourceIds", QJsonArray()},
+                               {"manual", true},
+                               {"revision", 1},
+                               {"screenshot", screenshot},
+                               {"createdAt", utcNow()}})) {
+        QFile::remove(store.root() + "/" + screenshot["path"].toString());
+        return {};
+    }
+    emit changed(sid);
+    return id;
+}
+QByteArray SessionController::screenshotForQuestion(QString sid, QString qid, QString *error) const {
+    const auto question = get("questions", sid, qid);
+    if (!question["screenshot"].isObject()) {
+        if (error)
+            error->clear();
+        return {};
+    }
+    return ScreenshotStore::read(store.root(), sid, qid, question["screenshot"].toObject(), error);
 }
 void SessionController::pump() {
     if (!activeAnswer.isEmpty())
@@ -240,7 +275,17 @@ void SessionController::pump() {
         activeAnswer = id;
         job.record["state"] = "Running";
         persist(job.request.operation == "review" ? "reviews" : "generations", job.record);
-        client.start(job.request);
+        auto outgoing = job.request;
+        if (!job.screenshot.isEmpty()) {
+            QString error;
+            outgoing.imagePng = ScreenshotStore::read(store.root(), outgoing.sessionId, outgoing.questionId,
+                                                      job.screenshot, &error);
+            if (outgoing.imagePng.isEmpty()) {
+                complete(id, false, error);
+                return;
+            }
+        }
+        client.start(outgoing);
         return;
     }
 }

@@ -21,6 +21,10 @@ CapturePrivacy::~CapturePrivacy() {
 bool CapturePrivacy::owns(QWidget *widget) const {
     if (!widget || !root || !widget->isWindow())
         return false;
+    // Screenshot selectors enforce their own verified exclusion even when
+    // ordinary window privacy is off. Never clear that independent request.
+    if (widget->property("captureExclusionIndependent").toBool())
+        return false;
     for (auto parent = widget; parent; parent = parent->parentWidget())
         if (parent == root)
             return true;

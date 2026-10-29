@@ -1,15 +1,18 @@
 #include "MainWindow.h"
-#include "SettingsDialog.h"
+#include "BossVisibility.h"
+#include "CapturePrivacy.h"
+#include "PlaybackDeviceSelector.h"
 #include "PreparationDialog.h"
 #include "ResumeUploadWidget.h"
-#include "PlaybackDeviceSelector.h"
+#include "SettingsDialog.h"
 #include "WindowAppearance.h"
 #include "WindowChrome.h"
-#include "CapturePrivacy.h"
-#include "BossVisibility.h"
-#include "preparation/Preparation.h"
+#include "WrittenInterviewWindow.h"
 #include "ai/InterviewLogic.h"
 #include "app/AppSettings.h"
+#include "capture/WrittenInput.h"
+#include "preparation/Preparation.h"
+#include <QAbstractScrollArea>
 #include <QApplication>
 #include <QCloseEvent>
 #include <QDesktopServices>
@@ -18,28 +21,27 @@
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QInputDialog>
+#include <QKeySequenceEdit>
 #include <QMediaDevices>
 #include <QMessageBox>
+#include <QPainter>
+#include <QPlatformSurfaceEvent>
+#include <QPointer>
 #include <QSaveFile>
+#include <QScreen>
+#include <QScrollArea>
 #include <QScrollBar>
+#include <QShortcut>
+#include <QShowEvent>
+#include <QSignalBlocker>
 #include <QSplitter>
 #include <QStatusBar>
+#include <QStyle>
+#include <QStyleHints>
 #include <QTabWidget>
 #include <QTimer>
 #include <QVBoxLayout>
-#include <QScreen>
-#include <QShowEvent>
 #include <QWindow>
-#include <QScrollArea>
-#include <QStyleHints>
-#include <QPainter>
-#include <QShortcut>
-#include <QKeySequenceEdit>
-#include <QSignalBlocker>
-#include <QStyle>
-#include <QPointer>
-#include <QPlatformSurfaceEvent>
-#include <QAbstractScrollArea>
 #include <algorithm>
 namespace {
 constexpr int gapMarkerRole = Qt::UserRole + 1;
@@ -55,7 +57,8 @@ struct ListScrollPosition {
 
     void restore(QListWidget *list) const {
         // Finish the rebuilt items' layout before restoring the viewport. Restoring
-        // the current selection alone would scroll an offscreen selected row into view.
+        // the current selection alone would scroll an offscreen selected row into
+        // view.
         list->doItemsLayout();
         if (follow)
             list->scrollToBottom();
@@ -81,6 +84,8 @@ void MainWindow::applyAppearance() {
         body->setAutoFillBackground(!transparentBackground);
     if (opacitySlider)
         opacitySlider->setEnabled(transparentBackground);
+    if (written)
+        written->setAppearance(transparentBackground, backgroundOpacity);
     if (auto list = findChild<QListWidget *>("transcriptList"))
         for (int i = 0; i < list->count(); ++i)
             if (list->item(i)->data(gapMarkerRole).toBool())
@@ -88,6 +93,13 @@ void MainWindow::applyAppearance() {
     update();
 }
 MainWindow::~MainWindow() {
+    if (written) {
+        auto child = written.data();
+        writtenIdentity = nullptr;
+        written.clear();
+        disconnect(child, nullptr, this, nullptr);
+        delete child;
+    }
     delete bossKey;
     bossKey = nullptr;
     delete bossVisibility;
@@ -130,6 +142,8 @@ void MainWindow::updateCaptureStatus() {
     captureStatus->style()->unpolish(captureStatus);
     captureStatus->style()->polish(captureStatus);
     captureStatus->update();
+    if (written)
+        written->setPrivacyState(message, complete, !on && complete);
 }
 void MainWindow::paintEvent(QPaintEvent *event) {
     QMainWindow::paintEvent(event);
@@ -217,7 +231,8 @@ void MainWindow::ensureOnScreen(bool forcePrimary) {
     }
     native->setScreen(primary);
     const auto available = primary->availableGeometry();
-    // Leave room for the native title bar and borders, including after DPI changes.
+    // Leave room for the native title bar and borders, including after DPI
+    // changes.
     QSize limit(qMin(1280, available.width() * 85 / 100), qMin(780, available.height() * 85 / 100));
     resize(forcePrimary ? limit : size().boundedTo(limit));
     auto frame = native->frameGeometry();
@@ -238,6 +253,7 @@ static QString stateName(QString s) {
 MainWindow::MainWindow(QWidget *parent, QString dataRoot, WindowCaptureBackend backend,
                        WindowCaptureBackend taskbarBackend, HotkeyBackend hotkeyBackend)
     : QMainWindow(parent), controller(dataRoot, this), player(this), output(this) {
+    writtenHotkeyBackend = hotkeyBackend;
     QGuiApplication::styleHints()->setColorScheme(Qt::ColorScheme::Light);
     QApplication::setPalette(WindowAppearance::palette(false));
     setWindowFlag(Qt::FramelessWindowHint);
@@ -298,6 +314,10 @@ MainWindow::MainWindow(QWidget *parent, QString dataRoot, WindowCaptureBackend b
     auto preparationButton = new QPushButton(QStringLiteral("面试准备"));
     preparationButton->setObjectName("preparationButton");
     header->addWidget(preparationButton);
+    writtenButton = new QPushButton(QStringLiteral("笔试面试"));
+    writtenButton->setObjectName("writtenInterviewButton");
+    header->addWidget(writtenButton);
+    connect(writtenButton, &QPushButton::clicked, this, &MainWindow::openWrittenInterview);
     hideWindowButton = new QPushButton(QStringLiteral("隐藏窗口"));
     hideWindowButton->setObjectName("hideWindowButton");
     hideWindowButton->setEnabled(false);
@@ -339,15 +359,21 @@ MainWindow::MainWindow(QWidget *parent, QString dataRoot, WindowCaptureBackend b
     captureStatus->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     appearance->addWidget(captureStatus, 1);
     const auto captureBackend = backend ? std::move(backend) : WindowCapture::setExcluded;
+    writtenCaptureBackend = captureBackend;
     shellBackend = taskbarBackend ? std::move(taskbarBackend) : WindowCapture::setTaskbarExcluded;
     capturePrivacy = new CapturePrivacy(this, [root = QPointer<MainWindow>(this), captureBackend,
                                                taskbarOperation = shellBackend](quintptr id, bool on) {
         const auto capture = captureBackend(id, on);
-        if (!root || id != quintptr(root->internalWinId()))
+        if (!root)
             return capture;
-        const auto shell = taskbarOperation(id, on);
-        if (root && shell.ok && id == quintptr(root->internalWinId()))
-            root->restoredTaskbarId = on ? 0 : id;
+        const bool main = id == quintptr(root->internalWinId());
+        const auto child = root->written;
+        if (!main && (!child || id != quintptr(child->internalWinId())))
+            return capture;
+        const bool excludeMain = on || (main && child && !root->isVisible());
+        const auto shell = main ? taskbarOperation(id, excludeMain) : child->setTaskbarExcluded(on);
+        if (root && shell.ok && main)
+            root->restoredTaskbarId = excludeMain ? 0 : id;
         QStringList errors;
         if (!capture.ok)
             errors.append(capture.error.isEmpty() ? QStringLiteral("窗口捕获排除设置失败") : capture.error);
@@ -372,6 +398,8 @@ MainWindow::MainWindow(QWidget *parent, QString dataRoot, WindowCaptureBackend b
         backgroundOpacity = value;
         QSettings().setValue("appearance/backgroundOpacity", value);
         opacityValue->setText(QStringLiteral("背景不透明度 %1%").arg(value));
+        if (written)
+            written->setAppearance(transparentBackground, backgroundOpacity);
         update();
     });
     auto appearanceShortcut = new QShortcut(QKeySequence("Ctrl+Shift+O"), this);
@@ -571,8 +599,11 @@ MainWindow::MainWindow(QWidget *parent, QString dataRoot, WindowCaptureBackend b
         if (currentChanged)
             refresh();
     });
-    connect(&controller, &SessionController::status, this,
-            [this](QString message) { statusBar()->showMessage(message); });
+    connect(&controller, &SessionController::status, this, [this](QString message) {
+        statusBar()->showMessage(message);
+        if (written)
+            written->showOperationStatus(message);
+    });
     connect(&controller, &SessionController::transcriptionStatus, this, [this](QString ch, QString message) {
         (ch == "remote" ? remoteStatus : micStatus)
             ->setText((ch == "remote" ? QStringLiteral("远端：") : QStringLiteral("麦克风：")) + message);
@@ -678,7 +709,12 @@ MainWindow::MainWindow(QWidget *parent, QString dataRoot, WindowCaptureBackend b
         bossVisibility->toggle();
     });
     connect(hideWindowButton, &QPushButton::clicked, bossVisibility, &BossVisibility::toggle);
-    connect(bossVisibility, &BossVisibility::restored, this, [this] { schedulePlacement(); });
+    connect(bossVisibility, &BossVisibility::restored, this, [this] {
+        if (written)
+            written->ensureOnScreen();
+        else
+            schedulePlacement();
+    });
     const auto savedKey =
         QSettings()
             .value("shortcuts/bossKey", GlobalHotkey::defaultSequence().toString(QKeySequence::PortableText))
@@ -689,6 +725,179 @@ MainWindow::MainWindow(QWidget *parent, QString dataRoot, WindowCaptureBackend b
     if (!registration.ok)
         statusBar()->showMessage(
             QStringLiteral("老板键未生效：%1。请在设置 → 快捷键中更改").arg(registration.error));
+}
+void MainWindow::openWrittenInterview() {
+    if (written || resume->busy())
+        return;
+    const bool maximized = isMaximized();
+    const QPointer<MainWindow> self(this);
+    const auto bounds = geometry();
+    written = new WrittenInterviewWindow(this, shellBackend);
+    auto child = written.data();
+    writtenIdentity = child;
+    const QPointer<WrittenInterviewWindow> guard(child);
+    connect(child, &QObject::destroyed, this, [this, child] { restoreFromWritten(child); });
+    child->setAppearance(transparentBackground, backgroundOpacity);
+    child->setGeometry(bounds);
+    if (auto item = questions->currentItem()) {
+        QString error;
+        const auto id = item->data(Qt::UserRole).toString();
+        child->showQuestion(id, item->text(), controller.screenshotForQuestion(viewedSession, id, &error));
+        if (!error.isEmpty())
+            child->showOperationStatus(error);
+    }
+    refreshWrittenAnswer();
+    connect(child, &WrittenInterviewWindow::questionReady, this, &MainWindow::generateWrittenAnswer);
+    connect(child, &WrittenInterviewWindow::imageQuestionReady, this, &MainWindow::generateWrittenImage);
+    connect(child, &WrittenInterviewWindow::providerSelected, provider, &QComboBox::setCurrentText);
+    connect(child, &WrittenInterviewWindow::taskbarRecreated, this,
+            [this, guard = QPointer<WrittenInterviewWindow>(child)] {
+                if (!guard || guard != written)
+                    return;
+                if (capturePrivacy->requested())
+                    capturePrivacy->setRequested(true);
+                else {
+                    const auto result = guard->setTaskbarExcluded(false);
+                    if (guard && !result.ok)
+                        guard->showOperationStatus(result.error);
+                }
+            });
+    connect(child, &WrittenInterviewWindow::returning, this, [this, child] { restoreFromWritten(child); });
+    auto appearanceShortcut = new QShortcut(QKeySequence("Ctrl+Shift+O"), child);
+    connect(appearanceShortcut, &QShortcut::activated, transparentToggle, &QCheckBox::toggle);
+    auto privacyShortcut = new QShortcut(QKeySequence("Ctrl+Shift+P"), child);
+    connect(privacyShortcut, &QShortcut::activated, captureToggle, &QPushButton::toggle);
+    bossVisibility->setPrimaryWindow(child);
+    hide();
+    clearRestoredTaskbar();
+    if (!self || !guard)
+        return;
+    if (maximized)
+        child->showMaximized();
+    else
+        child->show();
+    if (!guard || written != guard)
+        return;
+    if (!capturePrivacy->requested()) {
+        const auto result = child->setTaskbarExcluded(false);
+        if (!guard || written != guard)
+            return;
+        if (!result.ok)
+            guard->showOperationStatus(result.error);
+    }
+    updateCaptureStatus();
+    if (!guard || written != guard)
+        return;
+    auto input = new WrittenInput(child, writtenHotkeyBackend, {}, writtenCaptureBackend);
+    child->setInput(input);
+    connect(input, &WrittenInput::questionCaptured, child, &WrittenInterviewWindow::acceptQuestion);
+    connect(input, &WrittenInput::imageCaptured, child, &WrittenInterviewWindow::acceptImage);
+    connect(input, &WrittenInput::status, child, &WrittenInterviewWindow::showOperationStatus);
+    input->start();
+}
+void MainWindow::restoreFromWritten(WrittenInterviewWindow *child) {
+    if (writtenIdentity != child)
+        return;
+    writtenIdentity = nullptr;
+    written.clear();
+    bossVisibility->setPrimaryWindow(this);
+    const QPointer<MainWindow> self(this);
+    show();
+    if (!self)
+        return;
+    raise();
+    activateWindow();
+    if (!capturePrivacy->requested() && internalWinId()) {
+        const auto id = quintptr(internalWinId());
+        const auto invoke = shellBackend;
+        const auto result = invoke(id, false);
+        if (!self)
+            return;
+        if (result.ok && id == quintptr(internalWinId()))
+            restoredTaskbarId = id;
+        else if (!result.ok)
+            statusBar()->showMessage(result.error);
+    }
+    schedulePlacement();
+}
+void MainWindow::generateWrittenAnswer(QString text) {
+    if (!written || resume->busy())
+        return;
+    const auto sid = ensureSession();
+    if (sid.isEmpty()) {
+        written->showOperationStatus(QStringLiteral("无法创建会话"));
+        return;
+    }
+    QString id;
+    if (auto selected = questions->currentItem(); selected && selected->text() == text) {
+        const auto candidate = selected->data(Qt::UserRole).toString();
+        for (const auto &row : controller.store.list("questions", sid))
+            if (row["id"].toString() == candidate && !row.contains("screenshot")) {
+                id = candidate;
+                break;
+            }
+    }
+    if (id.isEmpty())
+        id = controller.addQuestion(sid, text, false);
+    if (id.isEmpty()) {
+        written->showOperationStatus(QStringLiteral("无法保存题目"));
+        return;
+    }
+    written->showQuestion(id, text);
+    controller.answerQuestion(sid, id, AppSettings().textConfig());
+    refresh();
+    for (int i = 0; i < questions->count(); ++i)
+        if (questions->item(i)->data(Qt::UserRole).toString() == id)
+            questions->setCurrentRow(i);
+    refreshWrittenAnswer();
+}
+void MainWindow::generateWrittenImage(QByteArray png, QString prompt) {
+    if (!written || resume->busy())
+        return;
+    if (prompt.size() > 12000) {
+        written->showOperationStatus(QStringLiteral("补充问题超过12000字，请精简"));
+        return;
+    }
+    if (prompt.trimmed().isEmpty())
+        prompt = QStringLiteral("请直接回答截图中的题目。");
+    const auto sid = ensureSession();
+    if (sid.isEmpty())
+        return;
+    QString id = written->questionId();
+    bool same = false;
+    for (const auto &q : controller.store.list("questions", sid))
+        if (q["id"].toString() == id && q["text"].toString() == prompt)
+            same = q["screenshot"].toObject()["sha256"].toString() ==
+                   QString::fromLatin1(QCryptographicHash::hash(png, QCryptographicHash::Sha256).toHex());
+    if (!same)
+        id = controller.addScreenshotQuestion(sid, png, prompt);
+    if (id.isEmpty()) {
+        written->showOperationStatus(QStringLiteral("无法保存截图题目，请检查数据目录"));
+        return;
+    }
+    written->showQuestion(id, prompt, png);
+    controller.answerQuestion(sid, id, AppSettings().textConfig());
+    refresh();
+    for (int i = 0; i < questions->count(); ++i)
+        if (questions->item(i)->data(Qt::UserRole).toString() == id)
+            questions->setCurrentRow(i);
+    refreshWrittenAnswer();
+}
+void MainWindow::refreshWrittenAnswer() {
+    if (!written || written->questionId().isEmpty())
+        return;
+    QJsonObject latest;
+    for (const auto &row : controller.store.list("generations", viewedSession))
+        if (row["questionId"].toString() == written->questionId())
+            latest = row;
+    if (latest.isEmpty())
+        return;
+    const auto error = latest["error"].toString();
+    written->showAnswer(written->questionId(),
+                        latest["text"].toString() + (error.isEmpty() ? QString() : "\n\n> " + error),
+                        QStringLiteral("%1 / %2 · %3")
+                            .arg(latest["provider"].toString(), latest["model"].toString(),
+                                 stateName(latest["state"].toString())));
 }
 void MainWindow::devices() {
     if (controller.recording())
@@ -811,8 +1020,9 @@ void MainWindow::refresh() {
                 transcripts->setCurrentItem(item);
         }
         auto gaps = controller.store.list("gaps", viewedSession);
-        // Old versions saved one row per audio callback. Merge only the presentation,
-        // retaining the original database records and separate channel/pause boundaries.
+        // Old versions saved one row per audio callback. Merge only the
+        // presentation, retaining the original database records and separate
+        // channel/pause boundaries.
         std::stable_sort(gaps.begin(), gaps.end(), [](const auto &a, const auto &b) {
             if (a["channel"] != b["channel"])
                 return a["channel"].toString() < b["channel"].toString();
@@ -864,6 +1074,7 @@ void MainWindow::refresh() {
     updateState();
 }
 void MainWindow::refreshAnswers() {
+    refreshWrittenAnswer();
     QString qid =
         questions->currentItem() ? questions->currentItem()->data(Qt::UserRole).toString() : QString();
     QJsonObject latest;
@@ -906,6 +1117,7 @@ void MainWindow::refreshAnswers() {
 void MainWindow::updateState() {
     bool live = controller.recording();
     startButton->setEnabled(!live && !resume->busy());
+    writtenButton->setEnabled(!resume->busy());
     resume->setReadOnly(live);
     pauseButton->setEnabled(live && !controller.stopping());
     finishButton->setEnabled(live && !controller.stopping());

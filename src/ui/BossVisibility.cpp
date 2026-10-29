@@ -8,8 +8,16 @@
 #include <windows.h>
 #endif
 
-BossVisibility::BossVisibility(QWidget *window) : QObject(window), root(window) {
+BossVisibility::BossVisibility(QWidget *window) : QObject(window), root(window), primary(window) {
     qApp->installNativeEventFilter(this);
+}
+void BossVisibility::setPrimaryWindow(QWidget *window) {
+    if (window && owns(window)) {
+        primary = window;
+        hiding = false;
+        windows.clear();
+        active.clear();
+    }
 }
 BossVisibility::~BossVisibility() {
     if (qApp)
@@ -22,15 +30,15 @@ bool BossVisibility::owns(QWidget *window) const {
     return false;
 }
 void BossVisibility::toggle() {
-    if (!root)
+    if (!root || !primary)
         return;
     const QPointer<BossVisibility> self(this);
 #ifdef Q_OS_WIN
     const bool native = QGuiApplication::platformName() == "windows";
-    const auto rootHandle = reinterpret_cast<HWND>(root->internalWinId());
-    const bool minimized = native ? IsIconic(rootHandle) : root->isMinimized();
+    const auto rootHandle = reinterpret_cast<HWND>(primary->internalWinId());
+    const bool minimized = native ? IsIconic(rootHandle) : primary->isMinimized();
 #else
-    const bool minimized = root->isMinimized();
+    const bool minimized = primary->isMinimized();
 #endif
     if (!hiding && !minimized) {
         active = QApplication::activeModalWidget();
@@ -76,14 +84,14 @@ void BossVisibility::toggle() {
     else
 #endif
     {
-        if (root->isMinimized())
-            root->setWindowState(root->windowState() & ~Qt::WindowMinimized);
-        root->show();
+        if (primary->isMinimized())
+            primary->setWindowState(primary->windowState() & ~Qt::WindowMinimized);
+        primary->show();
     }
     if (!self || !root)
         return;
     for (const auto &window : snapshot) {
-        if (!window || window == root || !owns(window))
+        if (!window || window == primary || !owns(window))
             continue;
 #ifdef Q_OS_WIN
         if (native)
@@ -96,7 +104,7 @@ void BossVisibility::toggle() {
     }
     auto target = QPointer<QWidget>(QApplication::activeModalWidget());
     if (!target || !owns(target))
-        target = active && owns(active) ? active : root;
+        target = active && owns(active) ? active : primary;
     if (target) {
         target->raise();
         target->activateWindow();
@@ -110,8 +118,12 @@ bool BossVisibility::nativeEventFilter(const QByteArray &type, void *message, qi
         if (event->message == WM_WINDOWPOSCHANGING) {
             auto position = reinterpret_cast<WINDOWPOS *>(event->lParam);
             auto widget = QWidget::find(WId(event->hwnd));
+            // An explicit screenshot action may show only its independently
+            // protected selector while the interview windows remain hidden.
+            const bool captureActive = widget && widget->property("captureExclusionIndependent").toBool() &&
+                                       widget->property("captureSelectionActive").toBool();
             if (position && (position->flags & SWP_SHOWWINDOW) && widget && widget->isWindow() &&
-                owns(widget)) {
+                owns(widget) && !captureActive) {
                 if (!windows.contains(widget))
                     windows.append(widget);
                 position->flags &= ~SWP_SHOWWINDOW;

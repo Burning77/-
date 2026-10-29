@@ -19,6 +19,7 @@ class ResumeUploadWidget;
 class CapturePrivacy;
 class WindowChrome;
 class BossVisibility;
+class WrittenInterviewWindow;
 class MainWindow : public QMainWindow {
     Q_OBJECT
   public:
@@ -53,6 +54,16 @@ class MainWindow : public QMainWindow {
     GlobalHotkey *bossKey = nullptr;
     BossVisibility *bossVisibility = nullptr;
     QPushButton *hideWindowButton = nullptr;
+    QPushButton *writtenButton = nullptr;
+    QPointer<WrittenInterviewWindow> written;
+    WrittenInterviewWindow *writtenIdentity = nullptr;
+    HotkeyBackend writtenHotkeyBackend;
+    WindowCaptureBackend writtenCaptureBackend;
+    void openWrittenInterview();
+    void restoreFromWritten(WrittenInterviewWindow *child);
+    void generateWrittenAnswer(QString text);
+    void generateWrittenImage(QByteArray png, QString prompt);
+    void refreshWrittenAnswer();
     QPushButton *captureToggle = nullptr;
     QLabel *captureStatus = nullptr;
     bool taskbarRefreshPending = false;
