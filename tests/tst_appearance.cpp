@@ -6,7 +6,19 @@
 #include <QSlider>
 #include <QScrollArea>
 #include <QStandardPaths>
+#include <QScopeGuard>
 #include <QtTest>
+
+class AppearanceIdleSource : public AudioSource {
+    void run() override {
+        QAudioFormat format;
+        format.setSampleRate(24000);
+        format.setChannelCount(1);
+        format.setSampleFormat(QAudioFormat::Int16);
+        emit formatReady(format);
+        exec();
+    }
+};
 
 class AppearanceTest : public QObject {
     Q_OBJECT
@@ -42,6 +54,146 @@ class AppearanceTest : public QObject {
         QSettings().clear();
         for (const auto &key : {"OpenAI/url", "DeepSeek/url", "transcription/url"})
             QSettings().setValue(key, "https://" + newId() + ".invalid");
+    }
+    void privacyStartsOffEveryLaunch() {
+        QSettings().setValue("privacy/excludeCapture", true);
+        int calls = 0;
+        const WindowCaptureBackend backend = [&](quintptr, bool) {
+            ++calls;
+            return WindowCaptureResult{true, {}};
+        };
+        {
+            MainWindow window(nullptr, dataPath(), backend);
+            window.show();
+            QTest::qWait(30);
+            auto toggle = window.findChild<QPushButton *>("capturePrivacyToggle");
+            auto status = window.findChild<QLabel *>("capturePrivacyStatus");
+            QVERIFY(toggle);
+            QVERIFY(status);
+            QVERIFY(!toggle->isChecked());
+            QVERIFY(status->text().contains(QStringLiteral("关闭")));
+            QCOMPARE(calls, 0);
+            toggle->click();
+            QVERIFY(toggle->isChecked());
+            QVERIFY(calls > 0);
+            QVERIFY(status->text().contains(QStringLiteral("已设置")));
+            QVERIFY(status->text().contains(QStringLiteral("需实测")));
+            QVERIFY(window.isVisible());
+        }
+        calls = 0;
+        MainWindow reopened(nullptr, dataPath(), backend);
+        auto toggle = reopened.findChild<QPushButton *>("capturePrivacyToggle");
+        QVERIFY(toggle);
+        QVERIFY(!toggle->isChecked());
+        QCOMPARE(calls, 0);
+    }
+    void privacyAndAppearancePreserveRecordingAndCoverSettings() {
+        QHash<quintptr, bool> flags;
+        MainWindow window(nullptr, dataPath(), [&](quintptr id, bool on) {
+            flags[id] = on;
+            return WindowCaptureResult{true, {}};
+        });
+        auto privacy = window.findChild<QPushButton *>("capturePrivacyToggle");
+        auto appearance = window.findChild<QCheckBox *>("transparentBackground");
+        auto status = window.findChild<QLabel *>("capturePrivacyStatus");
+        QVERIFY(privacy);
+        QVERIFY(appearance);
+        QVERIFY(status);
+        auto controller = window.findChild<SessionController *>();
+        QVERIFY(controller);
+        controller->autoExtract = false;
+        controller->autoAnswer = false;
+        controller->audio.renderFactory = [](const QString &) -> AudioSource * {
+            return new AppearanceIdleSource;
+        };
+        controller->audio.microphoneFactory = [](const QByteArray &) -> AudioSource * {
+            return new AppearanceIdleSource;
+        };
+        auto stop = qScopeGuard([&] {
+            if (controller->recording())
+                controller->discardRecording();
+        });
+        window.show();
+        QTest::qWait(30);
+        auto start = window.findChild<QPushButton *>("startButton");
+        QVERIFY(start);
+        start->click();
+        QVERIFY(controller->recording());
+        const auto session = controller->liveSessionId();
+        const auto id = quintptr(window.winId());
+        privacy->click();
+        QVERIFY(flags.value(id));
+        appearance->setChecked(true);
+        appearance->setChecked(false);
+        appearance->setChecked(true);
+        QCOMPARE(quintptr(window.winId()), id);
+        QVERIFY(flags.value(id));
+        QVERIFY(controller->recording());
+        QCOMPARE(controller->liveSessionId(), session);
+        SettingsDialog dialog(&window);
+        dialog.show();
+        QTest::qWait(30);
+        const auto dialogId = quintptr(dialog.winId());
+        QVERIFY(flags.value(dialogId));
+        QVERIFY(status->text().contains(QStringLiteral("已设置")));
+        privacy->click();
+        QVERIFY(!flags.value(id));
+        QVERIFY(!flags.value(dialogId));
+        QVERIFY(window.isVisible());
+        QVERIFY(dialog.isVisible());
+        QVERIFY(controller->recording());
+        QVERIFY(controller->discardRecording());
+    }
+    void privacyErrorsAndFailedClearAreVisible() {
+        bool failEnable = true;
+        bool failClear = false;
+        MainWindow window(nullptr, dataPath(), [&](quintptr, bool on) {
+            return (on ? failEnable : failClear) ? WindowCaptureResult{false, "fixture capture failure"}
+                                                 : WindowCaptureResult{true, {}};
+        });
+        window.show();
+        auto toggle = window.findChild<QPushButton *>("capturePrivacyToggle");
+        auto status = window.findChild<QLabel *>("capturePrivacyStatus");
+        QVERIFY(toggle);
+        QVERIFY(status);
+        toggle->click();
+        QVERIFY(toggle->isChecked());
+        QVERIFY(status->property("privacyError").toBool());
+        QVERIFY(status->text().contains(QStringLiteral("未完全生效")));
+        QVERIFY(status->text().contains("fixture capture failure"));
+        QVERIFY(!status->text().contains(QStringLiteral("已设置")));
+        toggle->click();
+        QVERIFY(!status->property("privacyError").toBool());
+        failEnable = false;
+        toggle->click();
+        QVERIFY(status->text().contains(QStringLiteral("已设置")));
+        failClear = true;
+        toggle->click();
+        QVERIFY(!toggle->isChecked());
+        QVERIFY(status->property("privacyError").toBool());
+        QVERIFY(status->text().contains(QStringLiteral("关闭失败")));
+        QVERIFY(window.isVisible());
+    }
+    void failedOwnedDialogUpdatesMainStatus() {
+        quintptr rootId = 0;
+        MainWindow window(nullptr, dataPath(), [&](quintptr id, bool on) {
+            return on && id != rootId ? WindowCaptureResult{false, "fixture dialog failure"}
+                                      : WindowCaptureResult{true, {}};
+        });
+        window.show();
+        rootId = quintptr(window.winId());
+        auto toggle = window.findChild<QPushButton *>("capturePrivacyToggle");
+        auto status = window.findChild<QLabel *>("capturePrivacyStatus");
+        QVERIFY(toggle);
+        QVERIFY(status);
+        toggle->click();
+        QVERIFY(status->text().contains(QStringLiteral("已设置")));
+        auto dialog = new QDialog(&window);
+        dialog->show();
+        QVERIFY(status->text().contains(QStringLiteral("未完全生效")));
+        QVERIFY(status->text().contains("fixture dialog failure"));
+        delete dialog;
+        QVERIFY(status->text().contains(QStringLiteral("已设置")));
     }
     void backgroundAlphaChangesWithoutFadingTextOrRecreatingWindow() {
         MainWindow window(nullptr, dataPath());

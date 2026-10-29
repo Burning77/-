@@ -5,6 +5,7 @@
 #include "PlaybackDeviceSelector.h"
 #include "WindowAppearance.h"
 #include "WindowChrome.h"
+#include "CapturePrivacy.h"
 #include "preparation/Preparation.h"
 #include "ai/InterviewLogic.h"
 #include "app/AppSettings.h"
@@ -32,6 +33,8 @@
 #include <QStyleHints>
 #include <QPainter>
 #include <QShortcut>
+#include <QSignalBlocker>
+#include <QStyle>
 #include <QAbstractScrollArea>
 #include <algorithm>
 namespace {
@@ -74,6 +77,33 @@ void MainWindow::applyAppearance() {
     if (opacitySlider)
         opacitySlider->setEnabled(transparentBackground);
     update();
+}
+MainWindow::~MainWindow() {
+    // Stop application-wide window callbacks before child widgets are destroyed.
+    // Keep native affinity until the corresponding HWND itself is destroyed.
+    if (capturePrivacy) {
+        disconnect(capturePrivacy, nullptr, this, nullptr);
+        delete capturePrivacy;
+        capturePrivacy = nullptr;
+    }
+}
+void MainWindow::updateCaptureStatus() {
+    if (!capturePrivacy || !captureToggle || !captureStatus)
+        return;
+    const bool on = capturePrivacy->requested();
+    const bool complete = capturePrivacy->fullyApplied();
+    const QSignalBlocker blocker(captureToggle);
+    captureToggle->setChecked(on);
+    const auto message = !complete ? QStringLiteral("远程隐藏：%1；%2。向日葵效果需实测")
+                                         .arg(on ? QStringLiteral("未完全生效") : QStringLiteral("关闭失败"),
+                                              capturePrivacy->error())
+                         : on      ? QStringLiteral("远程隐藏：已设置；向日葵效果需实测")
+                                   : QStringLiteral("远程隐藏：关闭；向日葵效果需实测");
+    captureStatus->setText(message);
+    captureStatus->setProperty("privacyError", !complete);
+    captureStatus->style()->unpolish(captureStatus);
+    captureStatus->style()->polish(captureStatus);
+    captureStatus->update();
 }
 void MainWindow::paintEvent(QPaintEvent *event) {
     QMainWindow::paintEvent(event);
@@ -152,7 +182,7 @@ static QString stateName(QString s) {
         {"Cancelled", QStringLiteral("已停止")}, {"discardFailed", QStringLiteral("丢弃失败")}};
     return labels.value(s, s);
 }
-MainWindow::MainWindow(QWidget *parent, QString dataRoot)
+MainWindow::MainWindow(QWidget *parent, QString dataRoot, WindowCaptureBackend backend)
     : QMainWindow(parent), controller(dataRoot, this), player(this), output(this) {
     QGuiApplication::styleHints()->setColorScheme(Qt::ColorScheme::Light);
     QApplication::setPalette(WindowAppearance::palette(false));
@@ -233,7 +263,24 @@ MainWindow::MainWindow(QWidget *parent, QString dataRoot)
     opacityValue = new QLabel(QStringLiteral("背景不透明度 %1%").arg(backgroundOpacity));
     opacityValue->setObjectName("backgroundOpacityValue");
     appearance->addWidget(opacityValue);
-    appearance->addStretch();
+    appearance->addSpacing(14);
+    captureToggle = new QPushButton(QStringLiteral("远程隐藏"));
+    captureToggle->setObjectName("capturePrivacyToggle");
+    captureToggle->setCheckable(true);
+    captureToggle->setToolTip(QStringLiteral("本机保持可见，向 Windows 请求捕获排除。"
+                                             "向日葵和系统原生弹窗效果需实测；Ctrl+Shift+P 切换。"
+                                             "每次启动默认关闭。"));
+    appearance->addWidget(captureToggle);
+    captureStatus = new QLabel;
+    captureStatus->setObjectName("capturePrivacyStatus");
+    captureStatus->setWordWrap(true);
+    captureStatus->setMinimumWidth(0);
+    captureStatus->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    appearance->addWidget(captureStatus, 1);
+    capturePrivacy = new CapturePrivacy(this, std::move(backend));
+    connect(captureToggle, &QPushButton::toggled, capturePrivacy, &CapturePrivacy::setRequested);
+    connect(capturePrivacy, &CapturePrivacy::stateChanged, this, &MainWindow::updateCaptureStatus);
+    updateCaptureStatus();
     layout->addLayout(appearance);
     connect(transparentToggle, &QCheckBox::toggled, this, [this](bool on) {
         transparentBackground = on;
@@ -248,6 +295,8 @@ MainWindow::MainWindow(QWidget *parent, QString dataRoot)
     });
     auto appearanceShortcut = new QShortcut(QKeySequence("Ctrl+Shift+O"), this);
     connect(appearanceShortcut, &QShortcut::activated, transparentToggle, &QCheckBox::toggle);
+    auto captureShortcut = new QShortcut(QKeySequence("Ctrl+Shift+P"), this);
+    connect(captureShortcut, &QShortcut::activated, captureToggle, &QPushButton::toggle);
     applyAppearance();
     connect(provider, &QComboBox::currentTextChanged, this, [](QString p) { AppSettings().select(p); });
     connect(settings, &QPushButton::clicked, this, [this] {

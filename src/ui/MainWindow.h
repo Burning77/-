@@ -1,5 +1,6 @@
 #pragma once
 #include "app/SessionController.h"
+#include "app/WindowCapture.h"
 #include <QAudioOutput>
 #include <QCheckBox>
 #include <QComboBox>
@@ -14,10 +15,12 @@
 #include <QTextBrowser>
 #include <QSlider>
 class ResumeUploadWidget;
+class CapturePrivacy;
 class MainWindow : public QMainWindow {
     Q_OBJECT
   public:
-    explicit MainWindow(QWidget *parent = nullptr, QString dataRoot = {});
+    explicit MainWindow(QWidget *parent = nullptr, QString dataRoot = {}, WindowCaptureBackend backend = {});
+    ~MainWindow() override;
 
   protected:
     void closeEvent(QCloseEvent *) override;
@@ -39,7 +42,11 @@ class MainWindow : public QMainWindow {
     QCheckBox *transparentToggle = nullptr;
     QSlider *opacitySlider = nullptr;
     QLabel *opacityValue = nullptr;
+    CapturePrivacy *capturePrivacy = nullptr;
+    QPushButton *captureToggle = nullptr;
+    QLabel *captureStatus = nullptr;
     void applyAppearance();
+    void updateCaptureStatus();
     void schedulePlacement(bool forcePrimary = false);
     void ensureOnScreen(bool forcePrimary);
     QComboBox *history, *provider, *remoteDevice, *micDevice;
