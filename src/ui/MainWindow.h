@@ -12,6 +12,7 @@
 #include <QProgressBar>
 #include <QPushButton>
 #include <QTextBrowser>
+#include <QSlider>
 class ResumeUploadWidget;
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -22,6 +23,7 @@ class MainWindow : public QMainWindow {
     void closeEvent(QCloseEvent *) override;
     void showEvent(QShowEvent *) override;
     bool event(QEvent *) override;
+    void paintEvent(QPaintEvent *) override;
 
   private:
     SessionController controller;
@@ -32,6 +34,12 @@ class MainWindow : public QMainWindow {
     bool forcePrimaryPlacement = false;
     bool correctingPlacement = false;
     QTimer placementTimer;
+    bool transparentBackground = false;
+    int backgroundOpacity = 80;
+    QCheckBox *transparentToggle = nullptr;
+    QSlider *opacitySlider = nullptr;
+    QLabel *opacityValue = nullptr;
+    void applyAppearance();
     void schedulePlacement(bool forcePrimary = false);
     void ensureOnScreen(bool forcePrimary);
     QComboBox *history, *provider, *remoteDevice, *micDevice;

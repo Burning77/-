@@ -1,6 +1,7 @@
 #include "ui/MainWindow.h"
 #include "ui/SettingsDialog.h"
 #include "app/AppSettings.h"
+#include "app/NetworkRuntime.h"
 #include "preparation/Preparation.h"
 #include "ui/ResumeUploadWidget.h"
 #include <QTableWidget>
@@ -123,6 +124,7 @@ class WindowTest : public QObject {
         QCOMPARE(QSettings().value("audio/remotePlaybackDevice").toString(), QString("fixture-playback"));
     }
     void initTestCase() {
+        NetworkRuntime::initializeTls();
         QFontDatabase::addApplicationFont(QStringLiteral("C:/Windows/Fonts/msyh.ttc"));
         QApplication::setFont(QFont("Microsoft YaHei", 9));
     }

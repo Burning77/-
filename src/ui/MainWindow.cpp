@@ -3,6 +3,8 @@
 #include "PreparationDialog.h"
 #include "ResumeUploadWidget.h"
 #include "PlaybackDeviceSelector.h"
+#include "WindowAppearance.h"
+#include "WindowChrome.h"
 #include "preparation/Preparation.h"
 #include "ai/InterviewLogic.h"
 #include "app/AppSettings.h"
@@ -28,6 +30,9 @@
 #include <QWindow>
 #include <QScrollArea>
 #include <QStyleHints>
+#include <QPainter>
+#include <QShortcut>
+#include <QAbstractScrollArea>
 #include <algorithm>
 namespace {
 struct ListScrollPosition {
@@ -59,6 +64,27 @@ static QString timestamp(qint64 ms) {
         .arg((sec / 60) % 60, 2, 10, QChar('0'))
         .arg(sec % 60, 2, 10, QChar('0'));
 }
+void MainWindow::applyAppearance() {
+    setPalette(WindowAppearance::palette(transparentBackground));
+    setStyleSheet(WindowAppearance::styleSheet(transparentBackground));
+    for (auto area : findChildren<QAbstractScrollArea *>())
+        area->viewport()->setAutoFillBackground(!transparentBackground);
+    if (auto body = findChild<QWidget *>("mainBody"))
+        body->setAutoFillBackground(!transparentBackground);
+    if (opacitySlider)
+        opacitySlider->setEnabled(transparentBackground);
+    update();
+}
+void MainWindow::paintEvent(QPaintEvent *event) {
+    QMainWindow::paintEvent(event);
+    QPainter painter(this);
+    painter.setRenderHint(QPainter::Antialiasing);
+    painter.setPen(QColor(transparentBackground ? "#73839b" : "#dce3ef"));
+    painter.setBrush(WindowAppearance::surface(transparentBackground, backgroundOpacity));
+    const auto bounds = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
+    const qreal radius = isMaximized() || isFullScreen() ? 0 : 10;
+    painter.drawRoundedRect(bounds, radius, radius);
+}
 void MainWindow::schedulePlacement(bool forcePrimary) {
     if (correctingPlacement)
         return;
@@ -74,6 +100,7 @@ bool MainWindow::event(QEvent *event) {
     return handled;
 }
 void MainWindow::showEvent(QShowEvent *event) {
+    applyAppearance();
     QMainWindow::showEvent(event);
     const bool first = !initiallyPositioned;
     initiallyPositioned = true;
@@ -127,24 +154,16 @@ static QString stateName(QString s) {
 }
 MainWindow::MainWindow(QWidget *parent, QString dataRoot)
     : QMainWindow(parent), controller(dataRoot, this), player(this), output(this) {
-    // Our styles use light surfaces. Give unstyled viewports, dialogs and native
-    // controls the same palette, regardless of the desktop's light/dark scheme.
     QGuiApplication::styleHints()->setColorScheme(Qt::ColorScheme::Light);
-    QPalette light(QColor(Qt::white), QColor("#f3f6fb"));
-    for (auto role : {QPalette::WindowText, QPalette::Text, QPalette::ButtonText, QPalette::ToolTipText})
-        light.setColor(role, QColor("#243047"));
-    light.setColor(QPalette::Base, Qt::white);
-    light.setColor(QPalette::AlternateBase, QColor("#eef4ff"));
-    light.setColor(QPalette::ToolTipBase, Qt::white);
-    light.setColor(QPalette::Highlight, QColor("#dbeafe"));
-    light.setColor(QPalette::HighlightedText, QColor("#17396d"));
-    light.setColor(QPalette::Accent, QColor("#2563eb"));
-    light.setColor(QPalette::Link, QColor("#2563eb"));
-    light.setColor(QPalette::LinkVisited, QColor("#6d49a8"));
-    light.setColor(QPalette::PlaceholderText, QColor("#8793a7"));
-    for (auto role : {QPalette::WindowText, QPalette::Text, QPalette::ButtonText})
-        light.setColor(QPalette::Disabled, role, QColor("#a4adba"));
-    QApplication::setPalette(light);
+    QApplication::setPalette(WindowAppearance::palette(false));
+    setWindowFlag(Qt::FramelessWindowHint);
+    setAttribute(Qt::WA_TranslucentBackground);
+    setContentsMargins(6, 0, 6, 6);
+    setMenuWidget(new WindowChrome(this));
+    transparentBackground = QSettings().value("appearance/transparent", false).toBool();
+    bool validOpacity = false;
+    const int savedOpacity = QSettings().value("appearance/backgroundOpacity", 80).toInt(&validOpacity);
+    backgroundOpacity = validOpacity ? qBound(40, savedOpacity, 95) : 80;
     setWindowTitle(QStringLiteral("面试助手 · 实时记录与复盘 · ") + QStringLiteral(INTERVIEW_APP_VERSION));
     resize(1280, 780);
     placementTimer.setSingleShot(true);
@@ -167,25 +186,14 @@ MainWindow::MainWindow(QWidget *parent, QString dataRoot)
     });
     connect(qGuiApp, &QGuiApplication::screenRemoved, this, [this] { schedulePlacement(); });
     connect(qGuiApp, &QGuiApplication::primaryScreenChanged, this, [this] { schedulePlacement(); });
-    setStyleSheet(QStringLiteral(
-        "QMainWindow{background:#f3f6fb} QWidget{font-family:'Microsoft YaHei "
-        "UI';font-size:13px;color:#243047} QGroupBox{background:white;border:1px solid "
-        "#dce3ef;border-radius:8px;margin-top:14px;padding-top:12px} "
-        "QGroupBox::title{subcontrol-origin:margin;left:12px;padding:0 5px;color:#364661;font-weight:600} "
-        "QPushButton{background:white;border:1px solid #ccd6e5;border-radius:5px;padding:7px 12px} "
-        "QPushButton:hover{background:#eef4ff} QPushButton:disabled{color:#a4adba;background:#f1f4f8} "
-        "QPushButton#startButton{background:#2563eb;color:white;border:0} "
-        "QLineEdit,QPlainTextEdit,QComboBox,QListWidget,QTextBrowser{background:white;border:1px solid "
-        "#d7dfeb;border-radius:5px;padding:5px;selection-background-color:#dbeafe;selection-color:#17396d} "
-        "QListWidget::item{padding:9px;border-bottom:1px solid #edf0f5} "
-        "QProgressBar{border:0;background:#e4eaf3;border-radius:3px;height:7px} "
-        "QProgressBar::chunk{background:#3b82f6;border-radius:3px} QTabWidget::pane{border:0} "
-        "QLabel#caption{font-size:23px;font-weight:700;color:#152b4f}"));
     auto body = new QWidget;
+    body->setObjectName("mainBody");
     auto layout = new QVBoxLayout(body);
     layout->setContentsMargins(18, 14, 18, 12);
     layout->setSpacing(10);
     auto viewport = new QScrollArea;
+    viewport->setObjectName("mainScrollArea");
+    viewport->viewport()->setObjectName("mainViewport");
     viewport->setFrameShape(QFrame::NoFrame);
     viewport->setWidgetResizable(true);
     viewport->setWidget(body);
@@ -209,6 +217,38 @@ MainWindow::MainWindow(QWidget *parent, QString dataRoot)
     settings->setObjectName("settingsButton");
     header->addWidget(settings);
     layout->addLayout(header);
+    auto appearance = new QHBoxLayout;
+    transparentToggle = new QCheckBox(QStringLiteral("透明背景"));
+    transparentToggle->setObjectName("transparentBackground");
+    transparentToggle->setChecked(transparentBackground);
+    transparentToggle->setToolTip(QStringLiteral("只改变背景透明度，文字保持清晰；Ctrl+Shift+O 切换"));
+    appearance->addWidget(transparentToggle);
+    opacitySlider = new QSlider(Qt::Horizontal);
+    opacitySlider->setObjectName("backgroundOpacity");
+    opacitySlider->setRange(40, 95);
+    opacitySlider->setValue(backgroundOpacity);
+    opacitySlider->setFixedWidth(120);
+    opacitySlider->setAccessibleName(QStringLiteral("背景不透明度"));
+    appearance->addWidget(opacitySlider);
+    opacityValue = new QLabel(QStringLiteral("背景不透明度 %1%").arg(backgroundOpacity));
+    opacityValue->setObjectName("backgroundOpacityValue");
+    appearance->addWidget(opacityValue);
+    appearance->addStretch();
+    layout->addLayout(appearance);
+    connect(transparentToggle, &QCheckBox::toggled, this, [this](bool on) {
+        transparentBackground = on;
+        QSettings().setValue("appearance/transparent", on);
+        applyAppearance();
+    });
+    connect(opacitySlider, &QSlider::valueChanged, this, [this](int value) {
+        backgroundOpacity = value;
+        QSettings().setValue("appearance/backgroundOpacity", value);
+        opacityValue->setText(QStringLiteral("背景不透明度 %1%").arg(value));
+        update();
+    });
+    auto appearanceShortcut = new QShortcut(QKeySequence("Ctrl+Shift+O"), this);
+    connect(appearanceShortcut, &QShortcut::activated, transparentToggle, &QCheckBox::toggle);
+    applyAppearance();
     connect(provider, &QComboBox::currentTextChanged, this, [](QString p) { AppSettings().select(p); });
     connect(settings, &QPushButton::clicked, this, [this] {
         SettingsDialog dialog(this);
