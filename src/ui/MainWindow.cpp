@@ -6,6 +6,7 @@
 #include "WindowAppearance.h"
 #include "WindowChrome.h"
 #include "CapturePrivacy.h"
+#include "BossVisibility.h"
 #include "preparation/Preparation.h"
 #include "ai/InterviewLogic.h"
 #include "app/AppSettings.h"
@@ -33,6 +34,7 @@
 #include <QStyleHints>
 #include <QPainter>
 #include <QShortcut>
+#include <QKeySequenceEdit>
 #include <QSignalBlocker>
 #include <QStyle>
 #include <QPointer>
@@ -86,6 +88,10 @@ void MainWindow::applyAppearance() {
     update();
 }
 MainWindow::~MainWindow() {
+    delete bossKey;
+    bossKey = nullptr;
+    delete bossVisibility;
+    bossVisibility = nullptr;
     // Stop application-wide window callbacks before child widgets are destroyed.
     // Keep native affinity until the corresponding HWND itself is destroyed.
     if (capturePrivacy) {
@@ -230,7 +236,7 @@ static QString stateName(QString s) {
     return labels.value(s, s);
 }
 MainWindow::MainWindow(QWidget *parent, QString dataRoot, WindowCaptureBackend backend,
-                       WindowCaptureBackend taskbarBackend)
+                       WindowCaptureBackend taskbarBackend, HotkeyBackend hotkeyBackend)
     : QMainWindow(parent), controller(dataRoot, this), player(this), output(this) {
     QGuiApplication::styleHints()->setColorScheme(Qt::ColorScheme::Light);
     QApplication::setPalette(WindowAppearance::palette(false));
@@ -292,6 +298,10 @@ MainWindow::MainWindow(QWidget *parent, QString dataRoot, WindowCaptureBackend b
     auto preparationButton = new QPushButton(QStringLiteral("面试准备"));
     preparationButton->setObjectName("preparationButton");
     header->addWidget(preparationButton);
+    hideWindowButton = new QPushButton(QStringLiteral("隐藏窗口"));
+    hideWindowButton->setObjectName("hideWindowButton");
+    hideWindowButton->setEnabled(false);
+    header->addWidget(hideWindowButton);
     auto settings = new QPushButton(QStringLiteral("设置"));
     settings->setObjectName("settingsButton");
     header->addWidget(settings);
@@ -371,7 +381,7 @@ MainWindow::MainWindow(QWidget *parent, QString dataRoot, WindowCaptureBackend b
     applyAppearance();
     connect(provider, &QComboBox::currentTextChanged, this, [](QString p) { AppSettings().select(p); });
     connect(settings, &QPushButton::clicked, this, [this] {
-        SettingsDialog dialog(this);
+        SettingsDialog dialog(this, bossKey);
         dialog.exec();
         provider->setCurrentText(AppSettings().textConfig().provider);
     });
@@ -651,6 +661,34 @@ MainWindow::MainWindow(QWidget *parent, QString dataRoot, WindowCaptureBackend b
     refresh();
     updateState();
     statusBar()->showMessage(QStringLiteral("就绪。可先在设置中测试文本模型和语音转写连接。"));
+    bossVisibility = new BossVisibility(this);
+    bossKey = new GlobalHotkey(this, std::move(hotkeyBackend));
+    auto updateBossKey = [this] {
+        hideWindowButton->setEnabled(bossKey->registered());
+        hideWindowButton->setToolTip(bossKey->registered()
+                                         ? QStringLiteral("隐藏本机窗口；按 %1 调出，录音和转写继续")
+                                               .arg(bossKey->sequence().toString(QKeySequence::NativeText))
+                                         : QStringLiteral("请先在设置 → 快捷键中保存一组可用的老板键"));
+    };
+    connect(bossKey, &GlobalHotkey::changed, this, updateBossKey);
+    connect(bossKey, &GlobalHotkey::activated, this, [this] {
+        for (auto focus = QApplication::focusWidget(); focus; focus = focus->parentWidget())
+            if (qobject_cast<QKeySequenceEdit *>(focus))
+                return; // Do not hide the settings while the user is recording a key.
+        bossVisibility->toggle();
+    });
+    connect(hideWindowButton, &QPushButton::clicked, bossVisibility, &BossVisibility::toggle);
+    connect(bossVisibility, &BossVisibility::restored, this, [this] { schedulePlacement(); });
+    const auto savedKey =
+        QSettings()
+            .value("shortcuts/bossKey", GlobalHotkey::defaultSequence().toString(QKeySequence::PortableText))
+            .toString();
+    const auto registration =
+        bossKey->setSequence(QKeySequence::fromString(savedKey, QKeySequence::PortableText));
+    updateBossKey();
+    if (!registration.ok)
+        statusBar()->showMessage(
+            QStringLiteral("老板键未生效：%1。请在设置 → 快捷键中更改").arg(registration.error));
 }
 void MainWindow::devices() {
     if (controller.recording())

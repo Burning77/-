@@ -1,5 +1,6 @@
 #include "SettingsDialog.h"
 #include "app/CredentialStore.h"
+#include "app/GlobalHotkey.h"
 #include "transcription/RealtimeTranscriber.h"
 #include "transcription/LocalTranscriber.h"
 #include "auth/ChatGptAccount.h"
@@ -10,12 +11,13 @@
 #include <QSettings>
 #include <QDialogButtonBox>
 #include <QFormLayout>
+#include <QKeySequenceEdit>
 #include <QMessageBox>
 #include <QPushButton>
 #include <QTabWidget>
 #include <QTimer>
 #include <QVBoxLayout>
-SettingsDialog::SettingsDialog(QWidget *p) : QDialog(p), client(this) {
+SettingsDialog::SettingsDialog(QWidget *p, GlobalHotkey *hotkey) : QDialog(p), client(this), bossKey(hotkey) {
     setWindowTitle(QStringLiteral("模型与转写设置"));
     resize(760, 510);
     auto layout = new QVBoxLayout(this);
@@ -26,6 +28,7 @@ SettingsDialog::SettingsDialog(QWidget *p) : QDialog(p), client(this) {
     row->addRow(QStringLiteral("当前文本服务"), selected);
     layout->addLayout(row);
     auto tabs = new QTabWidget;
+    pages = tabs;
     layout->addWidget(tabs);
     auto addTab = [tabs](QWidget *page, QString title) {
         auto scroll = new QScrollArea;
@@ -243,6 +246,43 @@ SettingsDialog::SettingsDialog(QWidget *p) : QDialog(p), client(this) {
         fields.append(f);
         addTab(page, name == "Transcription" ? QStringLiteral("语音转写") : name);
     }
+    auto shortcuts = new QWidget;
+    auto shortcutForm = new QFormLayout(shortcuts);
+    bossKeyEditor = new QKeySequenceEdit;
+    bossKeyEditor->setObjectName("bossKeySequence");
+    bossKeyEditor->setMaximumSequenceLength(1);
+    bossKeyEditor->setClearButtonEnabled(true);
+    bossKeyEditor->setKeySequence(QKeySequence::fromString(
+        QSettings()
+            .value("shortcuts/bossKey", GlobalHotkey::defaultSequence().toString(QKeySequence::PortableText))
+            .toString(),
+        QKeySequence::PortableText));
+    savedBossKey = bossKeyEditor->keySequence();
+    bossKeyStatus = new QLabel;
+    bossKeyStatus->setObjectName("bossKeyStatus");
+    bossKeyStatus->setTextFormat(Qt::PlainText);
+    bossKeyStatus->setWordWrap(true);
+    bossKeyStatus->setText(bossKey && !bossKey->registered()
+                               ? QStringLiteral("老板键未生效；请保存一组可用按键后再隐藏窗口")
+                               : QStringLiteral("全局快捷键：按一次隐藏，再按一次调出；录音和转写继续"));
+    auto applyKey = new QPushButton(QStringLiteral("保存老板键"));
+    applyKey->setObjectName("applyBossKey");
+    auto defaultKey = new QPushButton(QStringLiteral("恢复默认按键"));
+    shortcutForm->addRow(QStringLiteral("老板键（显示 / 隐藏）"), bossKeyEditor);
+    shortcutForm->addRow(applyKey);
+    shortcutForm->addRow(defaultKey);
+    shortcutForm->addRow(bossKeyStatus);
+    auto shortcutHelp =
+        new QLabel(QStringLiteral("在被控电脑上按此键可调出或隐藏软件，无需先点击软件。"
+                                  "默认 Ctrl+Alt+空格。改键失败会保留原键；仅编辑按键不生效，需点击保存。"
+                                  "老板键隐藏本机窗口；“远程隐藏”用于捕获排除，两者独立。"));
+    shortcutHelp->setWordWrap(true);
+    shortcutForm->addRow(shortcutHelp);
+    connect(applyKey, &QPushButton::clicked, this, [this] { saveBossKey(); });
+    connect(defaultKey, &QPushButton::clicked, this,
+            [this] { bossKeyEditor->setKeySequence(GlobalHotkey::defaultSequence()); });
+    shortcutsPage = tabs->count();
+    addTab(shortcuts, QStringLiteral("快捷键"));
     auto buttons = new QDialogButtonBox(QDialogButtonBox::Save | QDialogButtonBox::Cancel);
     layout->addWidget(buttons);
     connect(buttons, &QDialogButtonBox::accepted, this, [this] {
@@ -254,6 +294,20 @@ SettingsDialog::SettingsDialog(QWidget *p) : QDialog(p), client(this) {
         loadPlanModels();
     if (deepSeekMode->currentData().toBool() && DeepSeekAccount::shared().signedIn())
         loadDeepSeekModels();
+}
+bool SettingsDialog::saveBossKey() {
+    const auto sequence = bossKeyEditor->keySequence();
+    const auto result = bossKey ? bossKey->setSequence(sequence) : GlobalHotkey::validate(sequence);
+    if (!result.ok) {
+        bossKeyStatus->setText(result.error + QStringLiteral("；快捷键设置未更改"));
+        pages->setCurrentIndex(shortcutsPage);
+        return false;
+    }
+    QSettings().setValue("shortcuts/bossKey", sequence.toString(QKeySequence::PortableText));
+    savedBossKey = sequence;
+    bossKeyStatus->setText(QStringLiteral("老板键已保存：%1；按一次隐藏，再按一次调出")
+                               .arg(sequence.toString(QKeySequence::NativeText)));
+    return true;
 }
 void SettingsDialog::loadDeepSeekModels() {
     auto session = DeepSeekAccount::shared().sessionId();
@@ -403,7 +457,9 @@ bool SettingsDialog::save() {
                                       : QStringLiteral("已保存；留空保留"));
     }
     AppSettings().select(selected->currentText());
-    return true;
+    // An unavailable optional global key must not block model settings/tests.
+    // Explicit apply still retries an unchanged key after its conflict clears.
+    return bossKeyEditor->keySequence() == savedBossKey || saveBossKey();
 }
 void SettingsDialog::test(int index) {
     if (!save())

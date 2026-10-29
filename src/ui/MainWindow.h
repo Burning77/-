@@ -1,6 +1,7 @@
 #pragma once
 #include "app/SessionController.h"
 #include "app/WindowCapture.h"
+#include "app/GlobalHotkey.h"
 #include <QAudioOutput>
 #include <QCheckBox>
 #include <QComboBox>
@@ -17,11 +18,12 @@
 class ResumeUploadWidget;
 class CapturePrivacy;
 class WindowChrome;
+class BossVisibility;
 class MainWindow : public QMainWindow {
     Q_OBJECT
   public:
     explicit MainWindow(QWidget *parent = nullptr, QString dataRoot = {}, WindowCaptureBackend backend = {},
-                        WindowCaptureBackend taskbarBackend = {});
+                        WindowCaptureBackend taskbarBackend = {}, HotkeyBackend hotkeyBackend = {});
     ~MainWindow() override;
 
   protected:
@@ -48,6 +50,9 @@ class MainWindow : public QMainWindow {
     QLabel *opacityValue = nullptr;
     CapturePrivacy *capturePrivacy = nullptr;
     WindowChrome *chrome = nullptr;
+    GlobalHotkey *bossKey = nullptr;
+    BossVisibility *bossVisibility = nullptr;
+    QPushButton *hideWindowButton = nullptr;
     QPushButton *captureToggle = nullptr;
     QLabel *captureStatus = nullptr;
     bool taskbarRefreshPending = false;

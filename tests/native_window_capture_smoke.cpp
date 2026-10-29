@@ -1,12 +1,15 @@
 #include "ui/MainWindow.h"
 #include "ui/SettingsDialog.h"
 #include "app/NetworkRuntime.h"
+#include "app/GlobalHotkey.h"
+#include "ui/BossVisibility.h"
 #include <QApplication>
 #include <QDir>
 #include <QEvent>
 #include <QEventLoop>
 #include <QSettings>
 #include <QStandardPaths>
+#include <QStatusBar>
 #include <QTemporaryDir>
 #include <QTextStream>
 #include <QTimer>
@@ -100,6 +103,7 @@ int main(int argc, char **argv) {
     QSettings::setDefaultFormat(QSettings::IniFormat);
     QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, profile.path());
     QStandardPaths::setTestModeEnabled(true);
+    QSettings().setValue("shortcuts/bossKey", "Ctrl+Alt+Shift+F11");
     for (const auto &key : {"OpenAI/url", "DeepSeek/url", "transcription/url"})
         QSettings().setValue(key, "https://native-capture-fixture.invalid");
     NetworkRuntime::initializeTls();
@@ -186,6 +190,68 @@ int main(int argc, char **argv) {
     pump();
     if (!check(dialog, 0x11))
         return 11;
+    auto key = window.findChild<GlobalHotkey *>();
+    auto visibility = window.findChild<BossVisibility *>();
+    if (!key || !key->registered() || !visibility) {
+        QTextStream(stderr) << window.statusBar()->currentMessage() << Qt::endl;
+        return 21;
+    }
+    // The real adapter must own the configured Windows shortcut. A second
+    // registration must fail, without intercepting or injecting physical input.
+    if (RegisterHotKey(nullptr, 0x4100, MOD_CONTROL | MOD_ALT | MOD_SHIFT, VK_F11)) {
+        UnregisterHotKey(nullptr, 0x4100);
+        return 22;
+    }
+    if (GetLastError() != ERROR_HOTKEY_ALREADY_REGISTERED)
+        return 23;
+    window.showMaximized();
+    pump();
+    const auto maximizedRect = window.geometry();
+    visibility->toggle();
+    visibility->toggle();
+    pump();
+    if (!window.isMaximized() || !IsZoomed(reinterpret_cast<HWND>(handle)) ||
+        window.geometry() != maximizedRect || !check(window, 0x11)) {
+        QTextStream(stderr) << "Boss key failed to preserve maximized native state" << Qt::endl;
+        return 28;
+    }
+    window.showNormal();
+    pump();
+    QDialog modal(&window), late(&window);
+    QLineEdit draft("unsaved draft", &modal);
+    if (!cloak(modal) || !cloak(late))
+        return 24;
+    bool hiddenCorrectly = false, restoredDuringExec = false;
+    QTimer::singleShot(20, &modal, [&] {
+        visibility->toggle();
+        late.show(); // New owned dialogs must stay hidden as well.
+        hiddenCorrectly = visibility->hidden() && !IsWindowVisible(reinterpret_cast<HWND>(handle)) &&
+                          !IsWindowVisible(reinterpret_cast<HWND>(dialog.winId())) &&
+                          !IsWindowVisible(reinterpret_cast<HWND>(modal.winId())) &&
+                          !IsWindowVisible(reinterpret_cast<HWND>(late.winId()));
+        QTimer::singleShot(40, &modal, [&] {
+            visibility->toggle();
+            restoredDuringExec = !visibility->hidden() && check(window, 0x11) && check(dialog, 0x11) &&
+                                 check(modal, 0x11) && check(late, 0x11) && draft.text() == "unsaved draft";
+            modal.accept();
+        });
+    });
+    if (modal.exec() != QDialog::Accepted || !hiddenCorrectly || !restoredDuringExec) {
+        QTextStream(stderr) << "Boss key modal round trip: hide=" << hiddenCorrectly
+                            << " restore=" << restoredDuringExec << Qt::endl;
+        return 25;
+    }
+    late.hide();
+    // Destruction really releases native registration, so a new application
+    // can claim this unused fixture shortcut afterward.
+    {
+        GlobalHotkey temporary;
+        if (!temporary.setSequence(QKeySequence("Ctrl+Alt+Shift+F10")).ok)
+            return 26;
+    }
+    if (!RegisterHotKey(nullptr, 0x4101, MOD_CONTROL | MOD_ALT | MOD_SHIFT, VK_F10))
+        return 27;
+    UnregisterHotKey(nullptr, 0x4101);
     window.queueTaskbarRefresh();
     privacy->click();
     const auto callsAfterDisable = taskbarCalls;
@@ -205,6 +271,7 @@ int main(int argc, char **argv) {
                         << " paints, layered HWND, affinity0x11 across normal/glass/maximize/restore; owned "
                            "settings0x11; both clear0. Shell DeleteTab/AddTab succeeded; button recreation "
                            "reapplies privacy; native styles preserved. DWM cloak prevented desktop display."
+                           " Boss key registered/released; hide/restore preserved modal exec, draft and WDA."
                         << Qt::endl;
     return 0;
 }

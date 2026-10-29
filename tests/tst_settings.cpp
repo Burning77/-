@@ -4,6 +4,7 @@
 #include "ui/SettingsDialog.h"
 #include "ui/PlaybackDeviceSelector.h"
 #include <QDialogButtonBox>
+#include <QKeySequenceEdit>
 #include <QPushButton>
 #include <QStandardPaths>
 #include <QScopeGuard>
@@ -25,6 +26,30 @@ class SettingsTest : public QObject {
         return true;
     }
   private slots:
+    void bossKeyCanBeSavedAndReopened() {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        QCoreApplication::setOrganizationName("InterviewTests");
+        QCoreApplication::setApplicationName("BossKeySettings");
+        QSettings::setDefaultFormat(QSettings::IniFormat);
+        QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, dir.path());
+        QStandardPaths::setTestModeEnabled(true);
+        const auto restore = qScopeGuard([] { QStandardPaths::setTestModeEnabled(false); });
+        for (const auto &name : {"OpenAI/url", "DeepSeek/url", "transcription/url"})
+            QSettings().setValue(name, "https://" + newId() + ".invalid");
+        SettingsDialog dialog;
+        auto editor = dialog.findChild<QKeySequenceEdit *>("bossKeySequence");
+        QVERIFY(editor);
+        QCOMPARE(editor->keySequence(), QKeySequence("Ctrl+Alt+Space"));
+        editor->setKeySequence(QKeySequence("Ctrl+Alt+F8"));
+        auto apply = dialog.findChild<QPushButton *>("applyBossKey");
+        QVERIFY(apply);
+        apply->click();
+        QCOMPARE(QSettings().value("shortcuts/bossKey").toString(), QString("Ctrl+Alt+F8"));
+        SettingsDialog reopened;
+        QCOMPARE(reopened.findChild<QKeySequenceEdit *>("bossKeySequence")->keySequence(),
+                 QKeySequence("Ctrl+Alt+F8"));
+    }
     void playbackSelectionUsesSystemDefaultOrSavedDevice_data() {
         QTest::addColumn<QString>("preferred");
         QTest::addColumn<QString>("expected");

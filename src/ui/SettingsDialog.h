@@ -5,10 +5,14 @@
 #include <QDialog>
 #include <QLabel>
 #include <QLineEdit>
+#include <QKeySequence>
+class GlobalHotkey;
+class QKeySequenceEdit;
+class QTabWidget;
 class SettingsDialog : public QDialog {
     Q_OBJECT
   public:
-    explicit SettingsDialog(QWidget *p = nullptr);
+    explicit SettingsDialog(QWidget *p = nullptr, GlobalHotkey *hotkey = nullptr);
 
   private:
     struct Fields {
@@ -25,6 +29,13 @@ class SettingsDialog : public QDialog {
     QLabel *planStatus = nullptr;
     QComboBox *deepSeekMode = nullptr;
     QLabel *deepSeekStatus = nullptr;
+    GlobalHotkey *bossKey = nullptr;
+    QKeySequenceEdit *bossKeyEditor = nullptr;
+    QLabel *bossKeyStatus = nullptr;
+    QTabWidget *pages = nullptr;
+    int shortcutsPage = -1;
+    QKeySequence savedBossKey;
+    bool saveBossKey();
     void loadDeepSeekModels();
     void reloadAccounts();
     void loadPlanModels();

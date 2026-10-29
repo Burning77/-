@@ -49,6 +49,17 @@ class AppearanceTest : public QObject {
             QVERIFY(window.grab().save(directory + "/" + name + ".png"));
     }
   private slots:
+    void bossKeyHasARecoverableHideButton() {
+        MainWindow window(nullptr, dataPath());
+        window.show();
+        auto hide = window.findChild<QPushButton *>("hideWindowButton");
+        QVERIFY(hide);
+        // Offscreen QPA cannot register a global Windows key. Do not let a
+        // user hide the window through this button without a recovery key.
+        QVERIFY(!hide->isEnabled());
+        hide->click();
+        QVERIFY(window.isVisible());
+    }
     void initTestCase() {
         QVERIFY(profile.isValid());
         QCoreApplication::setOrganizationName("InterviewAppearanceTests");

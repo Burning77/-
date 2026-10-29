@@ -2,6 +2,24 @@
 
 日期：2026-10-21。当前实现为 C++ / Qt Widgets Windows 版本。
 
+## 0.7.7 可配置全局老板键（2026-10-29）
+
+用户要求被控电脑可一键调出/隐藏软件，并在设置中配置快捷键。默认 Ctrl+Alt+Space，使用 RegisterHotKey(NULL) 和 GUI 线程 WM_HOTKEY，MOD_NOREPEAT 避免长按来回切换。设置新增快捷键页，独立保存/恢复默认；改键先注册新组合，成功释放原键后才切换。冲突保留旧键及旧设置，注册失败时隐藏按钮禁用并显示原因。关闭时注销；启动按本机 QSettings 加载。
+
+Windows 用原生 ShowWindow 隐藏所属 Qt 顶层窗口，保留 QDialog::exec 及未保存字段；WM_WINDOWPOSCHANGING 阻止隐藏期间新建的所属 Qt 弹窗自行显示。恢复先显示所有者，再恢复对话框，优先激活当前所属模态窗口，并运行原有屏幕位置检查。显示状态与录音、转写、AI 任务及捕获排除独立，窗口句柄保持不变。
+
+缺失的设置输入框、隐藏按钮及隐藏行为均有预期失败记录。单席审查提出的最大化丢失、老板键不可用阻断其他设置，以及改键失败后候选注册回退失败的资源归属问题，均先复现失败再修复。调回使用 SW_SHOWNA 保留最大化；未修改的不可用老板键不阻止其他设置；清理失败的候选 ID 保留并在下次改键/退出时重试。快捷键消息校验线程目标、ID 和组合，忽略迟到旧键消息。
+
+原生检查使用自建 DWM-cloak 窗口和隔离 INI/数据库，不显示到用户桌面；临时注册测试组合 Ctrl+Alt+Shift+F10/F11，检查实际冲突与析构释放，不注入物理按键。另验证已有模态窗口隐藏后事件循环仍在、草稿保持、新建窗口保持隐藏、恢复后 0x11 捕获排除保持。受限沙箱拒绝全局注册（Windows错误5）及部分本机网络回环，原生全局注册和完整回环测试需在允许这些操作的测试执行环境运行。
+
+最终 Release 构建成功，完整 CTest20/20、QtTest297项通过，无失败或跳过。移除 Qt/MinGW 开发 PATH，使用新包内依赖及外部测试辅助组件，老板键19、设置28、外观22、捕获15、原窗口31，共115项通过；原生夹具38次绘制，最大化保持、模态隐藏恢复、草稿及0x11读回通过，退出0。单席只读审查无遗留关键或重要问题。修改后的 src/tests/CMake 共110个文件与英文构建副本一致。
+
+发布程序与最终构建 SHA256 一致：6FF681D495911384FD069BC183116EBDF7923F5031B2568A0CAD694632F529BC。ZIP75项逐项读取通过，229484971字节，无用户数据库、录音、凭据、日志或测试程序；dist/InterviewAssistant-0.7.7-win64.zip SHA256：CAA5E88919A5B222AB1BBB9E39F288E425CFBF0C32940C4BD5646961979E1ED6。旧版包和用户正在运行的程序保留。
+
+实际向日葵键盘转发、快捷键与目标机器其他软件的冲突、真实焦点/多屏/DPI及远端画面仍需用户现场验收。未操作实际面试窗口、向日葵、真实账号、简历或设备音频。
+
+接口依据：[RegisterHotKey](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-registerhotkey)、[WM_HOTKEY](https://learn.microsoft.com/en-us/windows/win32/inputdev/wm-hotkey)、[Qt原生事件过滤](https://doc.qt.io/qt-6/qabstractnativeeventfilter.html)、[ShowWindow状态](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-showwindow)。
+
 ## 0.7.6 隐私拖动绕过系统轮廓反馈（2026-10-29）
 
 用户提供被控端及控制端均出现细黑框的截图。源码确认标题栏和缩放手柄调用 QWindow::startSystemMove/startSystemResize，系统反馈可独立于被排除的窗口内容。截图与该路径的轮廓反馈一致，但没有现场确认具体绘制组件；只读查询本机 SPI_GETDRAGFULLWINDOWS 为True，不能据此断言向日葵修改了用户设置。
