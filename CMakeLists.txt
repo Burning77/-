@@ -19,6 +19,9 @@ target_compile_definitions(interview_core PUBLIC INTERVIEW_APP_VERSION="${PROJEC
 target_link_libraries(interview_core PUBLIC Qt6::Widgets Qt6::Multimedia Qt6::Network Qt6::Sql)
 if(WIN32)
  target_link_libraries(interview_core PUBLIC ole32 uuid avrt advapi32 winhttp bcrypt crypt32 user32 dwmapi)
+ # Explicit synthetic Windows-QPA check; DWM-cloaked, never part of CTest/deployment.
+ add_executable(native_window_capture_smoke EXCLUDE_FROM_ALL tests/native_window_capture_smoke.cpp)
+ target_link_libraries(native_window_capture_smoke PRIVATE interview_core)
 endif()
 add_executable(InterviewAssistant WIN32 src/main.cpp)
 target_link_libraries(InterviewAssistant PRIVATE interview_core)

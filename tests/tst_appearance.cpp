@@ -1,5 +1,6 @@
 #include "ui/MainWindow.h"
 #include "ui/SettingsDialog.h"
+#include "ui/PreparationDialog.h"
 #include <QAbstractScrollArea>
 #include <QFontDatabase>
 #include <QMouseEvent>
@@ -7,6 +8,9 @@
 #include <QScrollArea>
 #include <QStandardPaths>
 #include <QScopeGuard>
+#include <QHeaderView>
+#include <QTableWidget>
+#include <QTabWidget>
 #include <QtTest>
 
 class AppearanceIdleSource : public AudioSource {
@@ -343,6 +347,51 @@ class AppearanceTest : public QObject {
         }
         QVERIFY(visibleAreas > 0);
         screenshot(dialog, "appearance-settings-glass");
+    }
+    void preparationTableStaysReadableInGlassMode_data() {
+        QTest::addColumn<QString>("component");
+        for (const auto &name : {"horizontal-header", "vertical-header", "cells", "editor"})
+            QTest::newRow(name) << QString(name);
+    }
+    void preparationTableStaysReadableInGlassMode() {
+        QFETCH(QString, component);
+        MainWindow window(nullptr, dataPath());
+        window.findChild<QCheckBox *>("transparentBackground")->setChecked(true);
+        PreparationDialog dialog(dataPath(), {}, false, &window);
+        auto tabs = dialog.findChild<QTabWidget *>();
+        auto table = dialog.findChild<QTableWidget *>();
+        QVERIFY(tabs);
+        QVERIFY(table);
+        table->setRowCount(1);
+        table->setItem(0, 0, new QTableWidgetItem("SPI"));
+        tabs->setCurrentIndex(2);
+        dialog.show();
+        QTest::qWait(30);
+        screenshot(dialog, "appearance-preparation-glass");
+        QWidget *area = nullptr;
+        QPoint background(2, 2);
+        if (component == "horizontal-header")
+            area = table->horizontalHeader()->viewport();
+        else if (component == "vertical-header")
+            area = table->verticalHeader()->viewport();
+        else if (component == "cells") {
+            area = table->viewport();
+            background = QPoint(table->columnWidth(0) - 10, table->rowHeight(0) / 2);
+        } else {
+            table->editItem(table->item(0, 0));
+            QCoreApplication::processEvents();
+            area = table->findChild<QLineEdit *>();
+            QVERIFY(area);
+            background = QPoint(area->width() - 10, area->height() / 2);
+        }
+        QVERIFY(area);
+        const auto image = area->grab().toImage();
+        QVERIFY2(image.pixelColor(background).lightnessF() < 0.4,
+                 "A terminology table component painted light behind light text");
+        if (component == "vertical-header")
+            QVERIFY2(image.pixelColor(2, image.height() - 3).lightnessF() < 0.4,
+                     "The empty header viewport retained a light background");
+        QVERIFY(area->palette().color(QPalette::WindowText).lightnessF() > 0.8);
     }
 };
 QTEST_MAIN(AppearanceTest)

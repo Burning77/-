@@ -38,6 +38,7 @@
 #include <QAbstractScrollArea>
 #include <algorithm>
 namespace {
+constexpr int gapMarkerRole = Qt::UserRole + 1;
 struct ListScrollPosition {
     int x;
     int y;
@@ -76,6 +77,10 @@ void MainWindow::applyAppearance() {
         body->setAutoFillBackground(!transparentBackground);
     if (opacitySlider)
         opacitySlider->setEnabled(transparentBackground);
+    if (auto list = findChild<QListWidget *>("transcriptList"))
+        for (int i = 0; i < list->count(); ++i)
+            if (list->item(i)->data(gapMarkerRole).toBool())
+                list->item(i)->setForeground(QColor(transparentBackground ? "#ffc17b" : "#b45309"));
     update();
 }
 MainWindow::~MainWindow() {
@@ -731,7 +736,8 @@ void MainWindow::refresh() {
                          gap["reason"] == "paused" ? QStringLiteral("暂停区间")
                                                    : QStringLiteral("转写缺失区间")),
                 transcripts);
-            item->setForeground(QColor("#b45309"));
+            item->setData(gapMarkerRole, true);
+            item->setForeground(QColor(transparentBackground ? "#ffc17b" : "#b45309"));
         }
     }
     transcriptScroll.restore(transcripts);
