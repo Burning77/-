@@ -11,6 +11,12 @@
 #include <QFontDatabase>
 #include <QPainter>
 #include <QtTest>
+#ifdef Q_OS_WIN
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 class WrittenCaptureTest : public QObject {
     Q_OBJECT
     QTemporaryDir profile{QDir::currentPath() + "/written-capture-XXXXXX"};
@@ -37,7 +43,9 @@ class WrittenCaptureTest : public QObject {
             ++revision;
             return true;
         };
-        selected.readText = [](quint64, SelectionTextCallback done) { done("Explain SPI mode 0", {}); };
+        selected.readText = [](quint64 revision, SelectionTextCallback done) {
+            done({"Explain SPI mode 0", {}, revision});
+        };
         WrittenInput input(
             &owner,
             [&](int id, quint32, quint32, bool on) {
@@ -60,6 +68,41 @@ class WrittenCaptureTest : public QObject {
         QTest::qWait(80);
         QCOMPARE(result.size(), 1);
     }
+#ifdef Q_OS_WIN
+    void postedAltCReachesSelectionAndEmitsTheSelectedQuestion() {
+        QWidget owner;
+        int copyId = 0;
+        quint64 revision = 80;
+        SelectionBackend selected;
+        selected.foreground = [] { return quintptr(123); };
+        selected.external = [](quintptr) { return true; };
+        selected.released = [] { return true; };
+        selected.clipboardRevision = [&] { return revision; };
+        selected.clipboardMatchesTarget = [](quintptr) { return true; };
+        selected.copy = [&] {
+            ++revision;
+            return true;
+        };
+        selected.readText = [](quint64 current, SelectionTextCallback done) {
+            done({"Native Alt+C selected text", {}, current});
+        };
+        WrittenInput input(
+            &owner,
+            [&](int id, quint32 mods, quint32 key, bool enabled) {
+                if (enabled && mods == 1 && key == 67)
+                    copyId = id;
+                return HotkeyResult{true, {}};
+            },
+            selected);
+        QSignalSpy question(&input, &WrittenInput::questionCaptured);
+        input.start();
+        QVERIFY(copyId);
+        QVERIFY(PostThreadMessageW(GetCurrentThreadId(), WM_HOTKEY, copyId, MAKELPARAM(MOD_ALT, 'C')));
+        QTRY_COMPARE(question.size(), 1);
+        QCOMPARE(question[0][0].toString(), QString("Native Alt+C selected text"));
+        input.stop();
+    }
+#endif
     void screenshotAssetIsExactAndRemovedWithSession() {
         SessionStore store;
         const auto root = profile.path() + "/image-session";
@@ -137,9 +180,9 @@ class WrittenCaptureTest : public QObject {
         backend.readText = [&](quint64 version, SelectionTextCallback done) {
             ++reads;
             if (version == 9)
-                done("What is a mutex?", {});
+                done({"What is a mutex?", {}, version});
             else
-                done({}, "wrong clipboard revision");
+                done({{}, "wrong clipboard revision"});
         };
         SelectionCopy copy(nullptr, backend);
         QSignalSpy result(&copy, &SelectionCopy::finished);
@@ -149,6 +192,29 @@ class WrittenCaptureTest : public QObject {
         QVERIFY(result[0][1].toString().isEmpty());
         QCOMPARE(copies, 1);
         QCOMPARE(reads, 1);
+    }
+    void delayedRenderingByTheSameClipboardOwnerIsAccepted() {
+        quint64 revision = 40;
+        SelectionBackend backend;
+        backend.foreground = [] { return quintptr(123); };
+        backend.external = [](quintptr) { return true; };
+        backend.released = [] { return true; };
+        backend.clipboardRevision = [&] { return revision; };
+        backend.clipboardMatchesTarget = [](quintptr) { return true; };
+        backend.copy = [&] {
+            ++revision;
+            return true;
+        };
+        backend.readText = [&](quint64, SelectionTextCallback done) {
+            ++revision; // CF_UNICODETEXT is rendered on demand during the read.
+            done({"The selected question", {}, revision});
+        };
+        SelectionCopy copy(nullptr, backend);
+        QSignalSpy result(&copy, &SelectionCopy::finished);
+        copy.start();
+        QTRY_COMPARE(result.size(), 1);
+        QCOMPARE(result[0][0].toString(), QString("The selected question"));
+        QVERIFY(result[0][1].toString().isEmpty());
     }
     void cancellingBeforeModifierReleaseDoesNotCopyOrSubmit() {
         int copies = 0;
@@ -162,7 +228,9 @@ class WrittenCaptureTest : public QObject {
             ++copies;
             return true;
         };
-        backend.readText = [](quint64, SelectionTextCallback done) { done("stale", {}); };
+        backend.readText = [](quint64 revision, SelectionTextCallback done) {
+            done({"stale", {}, revision});
+        };
         SelectionCopy copy(nullptr, backend);
         QSignalSpy result(&copy, &SelectionCopy::finished);
         copy.start();
@@ -186,7 +254,7 @@ class WrittenCaptureTest : public QObject {
         };
         backend.readText = [&](quint64, SelectionTextCallback done) {
             ++reads;
-            done("UNRELATED CLIPBOARD", {});
+            done({"UNRELATED CLIPBOARD", {}, revision});
         };
         SelectionCopy copy(nullptr, backend);
         QSignalSpy done(&copy, &SelectionCopy::finished);
@@ -195,6 +263,59 @@ class WrittenCaptureTest : public QObject {
         QVERIFY(done[0][0].toString().isEmpty());
         QVERIFY(!done[0][1].toString().isEmpty());
         QCOMPARE(reads, 0);
+    }
+    void busyClipboardRetriesReadWithoutCopyingAgain() {
+        quint64 revision = 50;
+        int copies = 0, reads = 0;
+        SelectionBackend backend;
+        backend.foreground = [] { return quintptr(123); };
+        backend.external = [](quintptr) { return true; };
+        backend.released = [] { return true; };
+        backend.clipboardRevision = [&] { return revision; };
+        backend.clipboardMatchesTarget = [](quintptr) { return true; };
+        backend.copy = [&] {
+            ++revision;
+            ++copies;
+            return true;
+        };
+        backend.readText = [&](quint64 current, SelectionTextCallback done) {
+            ++reads;
+            if (reads == 1)
+                done({{}, {}, 0, true});
+            else
+                done({"Fresh selected question", {}, current});
+        };
+        SelectionCopy copy(nullptr, backend);
+        QSignalSpy result(&copy, &SelectionCopy::finished);
+        copy.start();
+        QTRY_COMPARE(result.size(), 1);
+        QCOMPARE(result[0][0].toString(), QString("Fresh selected question"));
+        QCOMPARE(copies, 1);
+        QCOMPARE(reads, 2);
+    }
+    void ownerChangeDuringReadNeverSubmitsText() {
+        quint64 revision = 60;
+        bool owned = true;
+        SelectionBackend backend;
+        backend.foreground = [] { return quintptr(123); };
+        backend.external = [](quintptr) { return true; };
+        backend.released = [] { return true; };
+        backend.clipboardRevision = [&] { return revision; };
+        backend.clipboardMatchesTarget = [&](quintptr) { return owned; };
+        backend.copy = [&] {
+            ++revision;
+            return true;
+        };
+        backend.readText = [&](quint64 current, SelectionTextCallback done) {
+            owned = false;
+            done({"UNRELATED CLIPBOARD", {}, current});
+        };
+        SelectionCopy copy(nullptr, backend);
+        QSignalSpy result(&copy, &SelectionCopy::finished);
+        copy.start();
+        QTRY_COMPARE(result.size(), 1);
+        QVERIFY(result[0][0].toString().isEmpty());
+        QVERIFY(!result[0][1].toString().isEmpty());
     }
     void selectorNeverShowsWhenCaptureExclusionFails() {
         QWidget owner;

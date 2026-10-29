@@ -5,7 +5,13 @@
 #include <QProcess>
 #include <QTimer>
 #include <functional>
-using SelectionTextCallback = std::function<void(QString text, QString error)>;
+struct SelectionTextResult {
+    QString text;
+    QString error;
+    quint64 revision = 0;
+    bool retryable = false;
+};
+using SelectionTextCallback = std::function<void(SelectionTextResult)>;
 struct SelectionBackend {
     std::function<quintptr()> foreground;
     std::function<bool(quintptr)> external;

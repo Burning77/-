@@ -23,6 +23,7 @@ class WrittenInterviewWindow : public QMainWindow {
     void acceptQuestion(QString text);
     void acceptImage(QImage image);
     void showOperationStatus(QString message);
+    void setShortcutStatus(QString message, bool ready);
     void ensureOnScreen();
     WindowCaptureResult setTaskbarExcluded(bool enabled);
     void setInput(WrittenInput *input);
@@ -46,13 +47,16 @@ class WrittenInterviewWindow : public QMainWindow {
     QComboBox *models;
     QLabel *privacy;
     QLabel *imagePreview;
+    QLabel *shortcutStatus;
     WindowChrome *chrome;
     WrittenInput *input = nullptr;
     QTimer editDelay;
     QString currentQuestion;
     QString displayedAnswer;
+    QString displayedStatus;
     QByteArray screenshot;
     bool glass = false, returningNow = false;
+    bool inputStatusActive = false;
     int opacity = 80;
     WindowCaptureBackend shell;
     quintptr restoredTaskbarId = 0;

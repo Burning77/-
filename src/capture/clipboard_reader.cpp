@@ -21,11 +21,25 @@ int main(int argc, char **argv) {
         const auto owner = GetClipboardOwner();
         return owner && GetWindowThreadProcessId(owner, &process) && process == expectedProcess;
     };
-    if (GetClipboardSequenceNumber() != expected || !OpenClipboard(nullptr))
+    if (GetClipboardSequenceNumber() != expected)
         return 3;
-    if (!matchesOwner()) {
+    bool opened = false;
+    for (int attempt = 0; attempt < 20; ++attempt) {
+        if (OpenClipboard(nullptr)) {
+            opened = true;
+            break;
+        }
+        Sleep(10);
+    }
+    if (!opened)
+        return 3;
+    if (GetClipboardSequenceNumber() != expected) {
         CloseClipboard();
         return 3;
+    }
+    if (!matchesOwner()) {
+        CloseClipboard();
+        return 10;
     }
     const auto data = GetClipboardData(CF_UNICODETEXT);
     if (!data) {
@@ -57,10 +71,14 @@ int main(int argc, char **argv) {
         WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, text, int(length), output.data(), size, nullptr,
                             nullptr);
     GlobalUnlock(data);
-    const bool unchanged = GetClipboardSequenceNumber() == expected && matchesOwner();
+    // GetClipboardData may synchronously render a delayed format and advance
+    // the sequence. The clipboard lock and owner checks protect that change.
+    const auto completedRevision = GetClipboardSequenceNumber();
+    const bool owned = completedRevision && matchesOwner();
     CloseClipboard();
-    if (!unchanged || output.empty())
+    if (!owned || output.empty())
         return 8;
+    output = std::to_string(completedRevision) + "\n" + output;
     DWORD written = 0;
     return WriteFile(GetStdHandle(STD_OUTPUT_HANDLE), output.data(), DWORD(output.size()), &written,
                      nullptr) &&

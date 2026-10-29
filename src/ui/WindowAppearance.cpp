@@ -64,7 +64,7 @@ QString WindowAppearance::styleSheet(bool transparent) {
                "QSlider::groove:horizontal{height:4px;background:%5;border-radius:2px} "
                "QSlider::handle:horizontal{width:12px;margin:-4px 0;background:#60a5fa;border-radius:6px} "
                "QLabel#capturePrivacyStatus[privacyError=true],QLabel#writtenPrivacyStatus[privacyError=true]"
-               "{color:%10}")
+               "{color:%10} QLabel#writtenShortcutStatus[shortcutError=true]{color:%10}")
         .arg(text, background, dialog, panel, border, button, hover, input,
              transparent ? "#ffffff" : "#152b4f", transparent ? "#ffc17b" : "#b45309");
 }

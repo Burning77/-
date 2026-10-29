@@ -257,6 +257,7 @@ MainWindow::MainWindow(QWidget *parent, QString dataRoot, WindowCaptureBackend b
     QGuiApplication::styleHints()->setColorScheme(Qt::ColorScheme::Light);
     QApplication::setPalette(WindowAppearance::palette(false));
     setWindowFlag(Qt::FramelessWindowHint);
+    setWindowFlag(Qt::WindowStaysOnTopHint);
     setAttribute(Qt::WA_TranslucentBackground);
     setContentsMargins(6, 0, 6, 6);
     chrome = new WindowChrome(this);
@@ -793,6 +794,7 @@ void MainWindow::openWrittenInterview() {
     connect(input, &WrittenInput::questionCaptured, child, &WrittenInterviewWindow::acceptQuestion);
     connect(input, &WrittenInput::imageCaptured, child, &WrittenInterviewWindow::acceptImage);
     connect(input, &WrittenInput::status, child, &WrittenInterviewWindow::showOperationStatus);
+    connect(input, &WrittenInput::shortcutStatus, child, &WrittenInterviewWindow::setShortcutStatus);
     input->start();
 }
 void MainWindow::restoreFromWritten(WrittenInterviewWindow *child) {

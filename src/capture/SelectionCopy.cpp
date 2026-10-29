@@ -124,20 +124,27 @@ void SelectionCopy::step() {
     reading = true;
     const auto epoch = serial;
     const QPointer<SelectionCopy> self(this);
-    backend.readText(revision, [self, epoch, revision](QString text, QString error) {
+    backend.readText(revision, [self, epoch](SelectionTextResult result) {
         if (!self || self->serial != epoch)
             return;
-        if (self->backend.foreground() != self->target || self->backend.clipboardRevision() != revision ||
+        if (self->backend.foreground() != self->target ||
             !self->backend.clipboardMatchesTarget(self->target)) {
             self->finish({}, QStringLiteral("取词已取消：目标窗口或剪贴板已变化"));
             return;
         }
-        if (!error.isEmpty())
-            self->finish({}, error);
-        else if (text.trimmed().isEmpty())
+        if (result.retryable) {
+            self->reading = false; // Retry the read only; never send Ctrl+C again.
+            return;
+        }
+        if (!result.error.isEmpty())
+            self->finish({}, result.error);
+        else if (!result.revision || result.revision == self->baseline ||
+                 self->backend.clipboardRevision() != result.revision)
+            self->finish({}, QStringLiteral("取词已取消：读取后的剪贴板已变化"));
+        else if (result.text.trimmed().isEmpty())
             self->finish({}, QStringLiteral("本次复制没有文字，请重新选择题目"));
         else
-            self->finish(text.trimmed(), {});
+            self->finish(result.text.trimmed(), {});
     });
 }
 void SelectionCopy::finish(QString text, QString error) {
@@ -153,7 +160,7 @@ void SelectionCopy::readClipboard(quint64 revision, SelectionTextCallback done) 
     expectedProcess = processId;
 #endif
     if (!expectedProcess) {
-        done({}, QStringLiteral("无法确认取词程序，请手动复制粘贴"));
+        done({{}, QStringLiteral("无法确认取词程序，请手动复制粘贴")});
         return;
     }
     auto process = new QProcess(this);
@@ -162,19 +169,30 @@ void SelectionCopy::readClipboard(quint64 revision, SelectionTextCallback done) 
     process->setCreateProcessArgumentsModifier(
         [](QProcess::CreateProcessArguments *args) { args->flags |= CREATE_NO_WINDOW; });
 #endif
-    connect(process, qOverload<int, QProcess::ExitStatus>(&QProcess::finished), this,
-            [process, done](int code, QProcess::ExitStatus status) {
-                const auto output = process->readAllStandardOutput();
-                process->deleteLater();
-                if (code != 0 || status != QProcess::NormalExit || output.size() > 60000)
-                    done({}, QStringLiteral("本次选中文字读取失败；请重新选择或手动粘贴"));
+    connect(
+        process, qOverload<int, QProcess::ExitStatus>(&QProcess::finished), this,
+        [process, done](int code, QProcess::ExitStatus status) {
+            const auto output = process->readAllStandardOutput();
+            process->deleteLater();
+            if (status == QProcess::NormalExit && code == 3)
+                done({{}, {}, 0, true});
+            else if (code != 0 || status != QProcess::NormalExit || output.size() > 60000)
+                done({{},
+                      QStringLiteral("本次选中文字读取失败（组件代码 %1）；请重新选择或手动粘贴").arg(code)});
+            else {
+                const auto split = output.indexOf('\n');
+                bool valid = false;
+                const auto completedRevision = output.left(split).toULongLong(&valid);
+                if (split <= 0 || !valid || !completedRevision)
+                    done({{}, QStringLiteral("取词组件返回无效数据，请保留完整运行包")});
                 else
-                    done(QString::fromUtf8(output), {});
-            });
+                    done({QString::fromUtf8(output.mid(split + 1)), {}, completedRevision});
+            }
+        });
     connect(process, &QProcess::errorOccurred, this, [process, done](QProcess::ProcessError error) {
         if (error == QProcess::FailedToStart) {
             process->deleteLater();
-            done({}, QStringLiteral("无法启动取词组件，请保留完整运行包或手动复制题目"));
+            done({{}, QStringLiteral("无法启动取词组件，请保留完整运行包或手动复制题目")});
         }
     });
     process->start(QCoreApplication::applicationDirPath() + "/ClipboardReader.exe",

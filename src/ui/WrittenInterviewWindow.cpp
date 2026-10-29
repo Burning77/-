@@ -28,6 +28,7 @@ WrittenInterviewWindow::WrittenInterviewWindow(QWidget *owner, WindowCaptureBack
     setAttribute(Qt::WA_DeleteOnClose);
     setAttribute(Qt::WA_TranslucentBackground);
     setWindowFlag(Qt::FramelessWindowHint);
+    setWindowFlag(Qt::WindowStaysOnTopHint);
     setWindowTitle(QStringLiteral("笔试面试 · ") + QStringLiteral(INTERVIEW_APP_VERSION));
     setContentsMargins(6, 0, 6, 6);
     chrome = new WindowChrome(this);
@@ -72,6 +73,8 @@ WrittenInterviewWindow::WrittenInterviewWindow(QWidget *owner, WindowCaptureBack
     questionLayout->addWidget(question);
     auto notice =
         new QLabel(QStringLiteral("所选文字或截图原图会发送给所选模型；快捷键可在原窗口设置中更改。"));
+    shortcutStatus = notice;
+    shortcutStatus->setObjectName("writtenShortcutStatus");
     notice->setWordWrap(true);
     questionLayout->addWidget(notice);
     auto answerPanel = new QGroupBox(QStringLiteral("答案"));
@@ -143,12 +146,15 @@ void WrittenInterviewWindow::setPrivacyState(QString text, bool complete, bool s
     chrome->setSystemInteractionEnabled(systemInteraction);
 }
 void WrittenInterviewWindow::showQuestion(QString id, QString text, QByteArray image) {
+    inputStatusActive = false;
+    displayedStatus.clear();
     editDelay.stop();
     const QSignalBlocker blocker(question);
     if (question->toPlainText() != text)
         question->setPlainText(text);
     if (currentQuestion != id) {
         displayedAnswer.clear();
+        displayedStatus.clear();
         answer->clear();
     }
     currentQuestion = id;
@@ -181,12 +187,22 @@ void WrittenInterviewWindow::acceptImage(QImage image) {
     showQuestion({}, QStringLiteral("请直接回答截图中的题目；如有多道题，请依次给出答案。"), png);
     answer->clear();
     showOperationStatus(QStringLiteral("正在将截图发送给所选模型…"));
+    // Commit the preview before file persistence/model dispatch can occupy
+    // the event loop. A deferred child update can leave a layered HWND stale.
+    const QPointer<WrittenInterviewWindow> self(this);
+    repaint();
+    if (!self)
+        return;
     emit imageQuestionReady(png, question->toPlainText());
 }
 void WrittenInterviewWindow::showAnswer(QString id, QString markdown, QString status) {
     if (id.isEmpty() || id != currentQuestion)
         return;
-    showOperationStatus(status);
+    if (status != displayedStatus) {
+        displayedStatus = status;
+        if (!inputStatusActive)
+            statusBar()->showMessage(status);
+    }
     if (markdown == displayedAnswer)
         return;
     auto bar = answer->verticalScrollBar();
@@ -208,10 +224,21 @@ void WrittenInterviewWindow::acceptQuestion(QString text) {
     showQuestion({}, text);
     answer->clear();
     showOperationStatus(QStringLiteral("正在生成答案…"));
+    const QPointer<WrittenInterviewWindow> self(this);
+    repaint();
+    if (!self)
+        return;
     emit questionReady(text);
 }
 void WrittenInterviewWindow::showOperationStatus(QString message) {
+    inputStatusActive = true;
     statusBar()->showMessage(message);
+}
+void WrittenInterviewWindow::setShortcutStatus(QString message, bool ready) {
+    shortcutStatus->setText(message);
+    shortcutStatus->setProperty("shortcutError", !ready);
+    shortcutStatus->style()->unpolish(shortcutStatus);
+    shortcutStatus->style()->polish(shortcutStatus);
 }
 void WrittenInterviewWindow::ensureOnScreen() {
     if (!isVisible() || isMinimized())

@@ -10,6 +10,8 @@
 #include <QEvent>
 #include <QEventLoop>
 #include <QMouseEvent>
+#include <QBuffer>
+#include <QPaintEvent>
 #include <QSettings>
 #include <QStandardPaths>
 #include <QStatusBar>
@@ -69,9 +71,12 @@ class TestWindowConcealer : public QObject, public QAbstractNativeEventFilter {
 class PaintCounter : public QObject {
   public:
     int count = 0;
+    QRegion painted;
     bool eventFilter(QObject *, QEvent *event) override {
-        if (event->type() == QEvent::Paint)
+        if (event->type() == QEvent::Paint) {
             ++count;
+            painted += static_cast<QPaintEvent *>(event)->region();
+        }
         return false;
     }
 };
@@ -259,6 +264,52 @@ int main(int argc, char **argv) {
     QPointer<WrittenInterviewWindow> written = window.findChild<WrittenInterviewWindow *>();
     if (!written || !safety.ok || window.isVisible() || !check(*written, 0x11))
         return 30;
+    PaintCounter writtenPaints;
+    written->installEventFilter(&writtenPaints);
+    const auto imageBytes = [](QColor color) {
+        QImage image(160, 100, QImage::Format_RGB32);
+        image.fill(color);
+        QByteArray png;
+        QBuffer buffer(&png);
+        buffer.open(QIODevice::WriteOnly);
+        image.save(&buffer, "PNG");
+        return png;
+    };
+    const auto fixedSize = written->size();
+    written->showQuestion("native-image-one", "same screenshot prompt", imageBytes(Qt::red));
+    pump();
+    writtenPaints.painted = QRegion();
+    written->showQuestion("native-image-two", "same screenshot prompt", imageBytes(Qt::blue));
+    pump();
+    if (written->size() != fixedSize || !writtenPaints.painted.contains(written->rect())) {
+        QTextStream(stderr) << "Second screenshot did not schedule a full layered-window paint" << Qt::endl;
+        return 41;
+    }
+    const auto topmost = [](QWidget &widget) {
+        return (GetWindowLongPtrW(reinterpret_cast<HWND>(widget.winId()), GWL_EXSTYLE) & WS_EX_TOPMOST) != 0;
+    };
+    if (!topmost(window) || !topmost(*written))
+        return 42;
+    auto controller = window.findChild<SessionController *>();
+    if (!controller)
+        return 43;
+    controller->client.keyReader = [](const QString &) { return QString(); };
+    QImage nextImage(160, 100, QImage::Format_RGB32);
+    nextImage.fill(Qt::green);
+    int paintsBefore = writtenPaints.count;
+    bool paintedBeforeSubmit = false;
+    const auto captureConnection = QObject::connect(written, &WrittenInterviewWindow::imageQuestionReady,
+                                                    written, [&](const QByteArray &, const QString &) {
+                                                        paintedBeforeSubmit =
+                                                            writtenPaints.count > paintsBefore;
+                                                    });
+    written->acceptImage(nextImage);
+    QObject::disconnect(captureConnection);
+    if (!paintedBeforeSubmit) {
+        QTextStream(stderr) << "New screenshot was submitted before its preview frame was painted"
+                            << Qt::endl;
+        return 43;
+    }
     auto boss = window.findChild<GlobalHotkey *>();
     if (!boss)
         return 31;

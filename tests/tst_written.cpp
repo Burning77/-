@@ -126,6 +126,47 @@ class WrittenTest : public QObject {
         QVERIFY(main.findChild<QCheckBox *>("transparentBackground")->isChecked());
         QVERIFY(main.findChild<QPushButton *>("capturePrivacyToggle")->isChecked());
     }
+    void inputFailureIsNotOverwrittenByAnUnchangedAnswer() {
+        WrittenInterviewWindow written(nullptr, {});
+        written.showQuestion("fixture-question", "What is a mutex?");
+        written.showAnswer("fixture-question", "A mutex protects shared state.", "Completed");
+        written.showOperationStatus("Copy failed: fixture");
+        written.showAnswer("fixture-question", "A mutex protects shared state.", "Completed");
+        QCOMPARE(written.statusBar()->currentMessage(), QString("Copy failed: fixture"));
+    }
+    void inputFailureSurvivesAnOldAnswerCompleting() {
+        WrittenInterviewWindow written(nullptr, {});
+        written.showQuestion("fixture-question", "What is a mutex?");
+        written.showAnswer("fixture-question", "Partial answer", "Running");
+        written.showOperationStatus("Copy failed: fixture");
+        written.showAnswer("fixture-question", "Complete answer", "Completed");
+        QCOMPARE(written.statusBar()->currentMessage(), QString("Copy failed: fixture"));
+        written.showQuestion("new-question", "What is a semaphore?");
+        written.showAnswer("new-question", "New answer", "Running");
+        QCOMPARE(written.statusBar()->currentMessage(), QString("Running"));
+    }
+    void shortcutConflictRemainsVisibleAfterAnswerStatusChanges() {
+        const auto success = [](quintptr, bool) { return WindowCaptureResult{true, {}}; };
+        MainWindow main(nullptr, profile.path() + "/shortcut-conflict-" + newId(), success, success,
+                        [](int, quint32 mods, quint32 key, bool enabled) {
+                            return enabled && mods == 1 && key == 67
+                                       ? HotkeyResult{false, "fixture Alt+C occupied"}
+                                       : HotkeyResult{true, {}};
+                        });
+        main.show();
+        QTest::qWait(20);
+        main.findChild<QPushButton *>("writtenInterviewButton")->click();
+        auto written = main.findChild<WrittenInterviewWindow *>();
+        QVERIFY(written);
+        written->showQuestion("fixture-question", "What is a mutex?");
+        written->showAnswer("fixture-question", "Fixture answer", "Completed");
+        bool visible = false;
+        for (auto label : written->findChildren<QLabel *>())
+            visible |= label->isVisible() && label->text().contains("fixture Alt+C occupied");
+        QVERIFY2(visible,
+                 "A shortcut registration failure must stay visible independently of AI answer status");
+        written->close();
+    }
     void capturedImageAppearsAsAnImageQuestion() {
         const auto success = [](quintptr, bool) { return WindowCaptureResult{true, {}}; };
         MainWindow main(nullptr, profile.path() + "/image-ui-" + newId(), success, success,

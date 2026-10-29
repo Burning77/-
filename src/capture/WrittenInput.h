@@ -19,6 +19,7 @@ class WrittenInput : public QObject {
     void captureSelection();
     void captureRegion();
   signals:
+    void shortcutStatus(QString text, bool ready);
     void questionCaptured(QString text);
     void imageCaptured(QImage image);
     void status(QString message);

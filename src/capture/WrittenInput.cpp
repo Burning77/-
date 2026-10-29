@@ -49,6 +49,10 @@ void WrittenInput::start() {
         QKeySequence::PortableText);
     const auto valid = CaptureShortcuts::validate(copy, shot, boss);
     if (!valid.ok) {
+        const QPointer<WrittenInput> self(this);
+        emit shortcutStatus(valid.error + QStringLiteral("；请返回原窗口设置快捷键"), false);
+        if (!self)
+            return;
         emit status(valid.error + QStringLiteral("；请返回原窗口设置快捷键"));
         return;
     }
@@ -58,10 +62,18 @@ void WrittenInput::start() {
         errors << QStringLiteral("取词快捷键未生效：%1").arg(copyResult.error);
     if (!shotResult.ok)
         errors << QStringLiteral("截图快捷键未生效：%1").arg(shotResult.error);
-    emit status(errors.isEmpty() ? QStringLiteral("%1 取词 · %2 区域截图；可在原窗口设置中更改")
-                                       .arg(copy.toString(QKeySequence::NativeText),
-                                            shot.toString(QKeySequence::NativeText))
-                                 : errors.join(QStringLiteral("；")));
+    const QPointer<WrittenInput> self(this);
+    emit shortcutStatus(
+        QStringLiteral("%1 取词：%2 · %3 截图：%4。文字/截图会发送给所选模型；返回原窗口可改键。")
+            .arg(copy.toString(QKeySequence::NativeText),
+                 copyResult.ok ? QStringLiteral("已就绪") : copyResult.error,
+                 shot.toString(QKeySequence::NativeText),
+                 shotResult.ok ? QStringLiteral("已就绪") : shotResult.error),
+        errors.isEmpty());
+    if (!self)
+        return;
+    if (!errors.isEmpty())
+        emit status(errors.join(QStringLiteral("；")));
 }
 void WrittenInput::stop() {
     running = false;
