@@ -10,6 +10,7 @@
 #include <QTemporaryDir>
 #include <QTextStream>
 #include <QTimer>
+#include <QMouseEvent>
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
@@ -27,6 +28,7 @@ class PaintCounter : public QObject {
 class SmokeWindow : public MainWindow {
   public:
     using MainWindow::MainWindow;
+    int systemDragRequests = 0;
     void queueTaskbarRefresh() {
         MSG message{};
         message.hwnd = reinterpret_cast<HWND>(winId());
@@ -37,7 +39,36 @@ class SmokeWindow : public MainWindow {
     void destroyNativeSurface() {
         destroy();
     }
+
+  protected:
+    bool nativeEvent(const QByteArray &type, void *message, qintptr *result) override {
+        if (type == "windows_generic_MSG") {
+            const auto event = static_cast<MSG *>(message);
+            const auto command = event->wParam & 0xfff0;
+            const bool dragCommand =
+                event->message == WM_SYSCOMMAND && (command == SC_MOVE || command == SC_SIZE);
+            const bool dragHit =
+                event->message == WM_NCLBUTTONDOWN &&
+                (event->wParam == HTCAPTION || (event->wParam >= HTLEFT && event->wParam <= HTBOTTOMRIGHT));
+            if (dragCommand || dragHit) {
+                ++systemDragRequests;
+                *result = 0;
+                return true; // Never enter an OS move loop or draw desktop feedback in this fixture.
+            }
+        }
+        return MainWindow::nativeEvent(type, message, result);
+    }
 };
+static void drag(QWidget *widget, QPoint delta) {
+    const auto press = widget->mapToGlobal(QPoint(qMin(80, widget->width() / 2), widget->height() / 2));
+    for (auto type : {QEvent::MouseButtonPress, QEvent::MouseMove, QEvent::MouseButtonRelease}) {
+        const auto global = type == QEvent::MouseButtonPress ? press : press + delta;
+        QMouseEvent event(type, widget->mapFromGlobal(global), global,
+                          type == QEvent::MouseMove ? Qt::NoButton : Qt::LeftButton,
+                          type == QEvent::MouseButtonRelease ? Qt::NoButton : Qt::LeftButton, Qt::NoModifier);
+        QCoreApplication::sendEvent(widget, &event);
+    }
+}
 static void pump() {
     QEventLoop loop;
     QTimer::singleShot(150, &loop, &QEventLoop::quit);
@@ -109,6 +140,22 @@ int main(int argc, char **argv) {
     pump();
     if (taskbarCalls <= previousCalls || !check(window, 0x11))
         return 13;
+    auto bar = window.findChild<QWidget *>("windowTitleBar");
+    auto right = window.findChild<QWidget *>("resizeRight");
+    if (!bar || !right)
+        return 19;
+    const auto origin = window.pos();
+    drag(bar, QPoint(20, 15));
+    pump();
+    const auto oldWidth = window.width();
+    drag(right, QPoint(20, 0));
+    pump();
+    if (window.systemDragRequests || window.pos() != origin + QPoint(20, 15) ||
+        window.width() != oldWidth + 20 || !check(window, 0x11)) {
+        QTextStream(stderr) << "Private drag leaked system requests=" << window.systemDragRequests
+                            << Qt::endl;
+        return 20;
+    }
     for (bool mode : {true, false, true}) {
         appearance->setChecked(mode);
         window.update();

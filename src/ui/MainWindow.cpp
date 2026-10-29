@@ -110,6 +110,8 @@ void MainWindow::updateCaptureStatus() {
         return;
     const bool on = capturePrivacy->requested();
     const bool complete = capturePrivacy->fullyApplied();
+    if (chrome)
+        chrome->setSystemInteractionEnabled(!on && complete);
     const QSignalBlocker blocker(captureToggle);
     captureToggle->setChecked(on);
     const auto message = !complete ? QStringLiteral("远程隐藏：%1；%2。向日葵效果需实测")
@@ -235,7 +237,8 @@ MainWindow::MainWindow(QWidget *parent, QString dataRoot, WindowCaptureBackend b
     setWindowFlag(Qt::FramelessWindowHint);
     setAttribute(Qt::WA_TranslucentBackground);
     setContentsMargins(6, 0, 6, 6);
-    setMenuWidget(new WindowChrome(this));
+    chrome = new WindowChrome(this);
+    setMenuWidget(chrome);
     transparentBackground = QSettings().value("appearance/transparent", false).toBool();
     bool validOpacity = false;
     const int savedOpacity = QSettings().value("appearance/backgroundOpacity", 80).toInt(&validOpacity);
@@ -341,6 +344,10 @@ MainWindow::MainWindow(QWidget *parent, QString dataRoot, WindowCaptureBackend b
         if (!shell.ok)
             errors.append(shell.error.isEmpty() ? QStringLiteral("任务栏图标设置失败") : shell.error);
         return WindowCaptureResult{errors.isEmpty(), errors.join(QStringLiteral("；"))};
+    });
+    connect(captureToggle, &QPushButton::toggled, chrome, [chrome = chrome](bool on) {
+        if (on)
+            chrome->setSystemInteractionEnabled(false);
     });
     connect(captureToggle, &QPushButton::toggled, capturePrivacy, &CapturePrivacy::setRequested);
     connect(capturePrivacy, &CapturePrivacy::stateChanged, this, &MainWindow::updateCaptureStatus);

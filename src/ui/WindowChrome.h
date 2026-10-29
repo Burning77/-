@@ -7,6 +7,8 @@
 class WindowChrome : public QWidget {
   public:
     explicit WindowChrome(QWidget *window);
+    void setSystemInteractionEnabled(bool enabled);
+    bool systemInteractionEnabled() const;
 
   protected:
     bool eventFilter(QObject *, QEvent *) override;
@@ -22,5 +24,7 @@ class WindowChrome : public QWidget {
     QList<QWidget *> handles;
     QPoint pressPosition, initialPosition;
     bool dragging = false;
+    bool dragFromMaximized = false;
+    bool systemInteraction = true;
     void sync();
 };

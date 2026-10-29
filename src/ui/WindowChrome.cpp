@@ -3,18 +3,21 @@
 #include <QHBoxLayout>
 #include <QMouseEvent>
 #include <QWindow>
+#include <QApplication>
+#include <QScreen>
 
 namespace {
 class ResizeHandle : public QWidget {
     QPointer<QWidget> target;
+    QPointer<WindowChrome> chrome;
     Qt::Edges edges;
     QRect initial;
     QPoint press;
     bool dragging = false;
 
   public:
-    ResizeHandle(QWidget *window, Qt::Edges edges, const QString &name)
-        : QWidget(window), target(window), edges(edges) {
+    ResizeHandle(QWidget *window, WindowChrome *chrome, Qt::Edges edges, const QString &name)
+        : QWidget(window), target(window), chrome(chrome), edges(edges) {
         setObjectName(name);
         setCursor(edges == (Qt::LeftEdge | Qt::TopEdge) || edges == (Qt::RightEdge | Qt::BottomEdge)
                       ? Qt::SizeFDiagCursor
@@ -23,12 +26,17 @@ class ResizeHandle : public QWidget {
                   : edges.testFlag(Qt::LeftEdge) || edges.testFlag(Qt::RightEdge) ? Qt::SizeHorCursor
                                                                                   : Qt::SizeVerCursor);
     }
+    void cancelDrag() {
+        dragging = false;
+    }
 
   protected:
     void mousePressEvent(QMouseEvent *event) override {
-        if (!target || event->button() != Qt::LeftButton || target->isMaximized())
+        if (!target || !chrome || event->button() != Qt::LeftButton || target->isMaximized() ||
+            target->isFullScreen())
             return;
-        if (target->windowHandle() && target->windowHandle()->startSystemResize(edges)) {
+        if (chrome->systemInteractionEnabled() && target->windowHandle() &&
+            target->windowHandle()->startSystemResize(edges)) {
             event->accept();
             return;
         }
@@ -96,10 +104,22 @@ WindowChrome::WindowChrome(QWidget *window) : QWidget(window), target(window) {
                              Qt::BottomEdge | Qt::RightEdge, Qt::BottomEdge | Qt::LeftEdge}) {
         const QStringList names{"resizeTop",     "resizeRight",    "resizeBottom",      "resizeLeft",
                                 "resizeTopLeft", "resizeTopRight", "resizeBottomRight", "resizeBottomLeft"};
-        handles.append(new ResizeHandle(window, edge, names[handles.size()]));
+        handles.append(new ResizeHandle(window, this, edge, names[handles.size()]));
     }
     window->installEventFilter(this);
     sync();
+}
+void WindowChrome::setSystemInteractionEnabled(bool enabled) {
+    if (systemInteraction == enabled)
+        return;
+    systemInteraction = enabled;
+    dragging = false;
+    dragFromMaximized = false;
+    for (auto handle : handles)
+        static_cast<ResizeHandle *>(handle)->cancelDrag();
+}
+bool WindowChrome::systemInteractionEnabled() const {
+    return systemInteraction;
 }
 void WindowChrome::sync() {
     if (!target)
@@ -130,21 +150,47 @@ bool WindowChrome::eventFilter(QObject *, QEvent *event) {
 void WindowChrome::mousePressEvent(QMouseEvent *event) {
     if (!target || event->button() != Qt::LeftButton)
         return;
-    if (target->windowHandle() && target->windowHandle()->startSystemMove()) {
+    if (systemInteraction && target->windowHandle() && target->windowHandle()->startSystemMove()) {
         event->accept();
         return;
     }
-    dragging = !target->isMaximized();
+    dragging = !target->isFullScreen();
+    dragFromMaximized = target->isMaximized();
     pressPosition = event->globalPosition().toPoint();
     initialPosition = target->pos();
     event->accept();
 }
 void WindowChrome::mouseMoveEvent(QMouseEvent *event) {
-    if (target && dragging && event->buttons().testFlag(Qt::LeftButton))
-        target->move(initialPosition + event->globalPosition().toPoint() - pressPosition);
+    if (!target || !dragging || !event->buttons().testFlag(Qt::LeftButton))
+        return;
+    const auto global = event->globalPosition().toPoint();
+    if (dragFromMaximized) {
+        if ((global - pressPosition).manhattanLength() < QApplication::startDragDistance())
+            return;
+        const auto horizontalAnchor = qBound(
+            qreal(0), qreal(pressPosition.x() - initialPosition.x()) / qMax(1, target->width()), qreal(1));
+        const auto verticalAnchor = qBound(0, pressPosition.y() - initialPosition.y(), height() - 1);
+        const QPointer<WindowChrome> self(this);
+        target->showNormal();
+        if (!self || !target)
+            return;
+        dragFromMaximized = false;
+        pressPosition = global;
+        initialPosition = global - QPoint(qRound(target->width() * horizontalAnchor), verticalAnchor);
+        if (const auto screen = target->screen()) {
+            const auto available = screen->availableGeometry();
+            initialPosition.setX(qBound(available.left(), initialPosition.x(),
+                                        qMax(available.left(), available.right() - target->width() + 1)));
+            initialPosition.setY(qBound(available.top(), initialPosition.y(),
+                                        qMax(available.top(), available.bottom() - target->height() + 1)));
+        }
+    }
+    target->move(initialPosition + global - pressPosition);
+    event->accept();
 }
 void WindowChrome::mouseReleaseEvent(QMouseEvent *) {
     dragging = false;
+    dragFromMaximized = false;
 }
 void WindowChrome::mouseDoubleClickEvent(QMouseEvent *event) {
     if (target && event->button() == Qt::LeftButton)

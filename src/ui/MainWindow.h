@@ -16,6 +16,7 @@
 #include <QSlider>
 class ResumeUploadWidget;
 class CapturePrivacy;
+class WindowChrome;
 class MainWindow : public QMainWindow {
     Q_OBJECT
   public:
@@ -46,6 +47,7 @@ class MainWindow : public QMainWindow {
     QSlider *opacitySlider = nullptr;
     QLabel *opacityValue = nullptr;
     CapturePrivacy *capturePrivacy = nullptr;
+    WindowChrome *chrome = nullptr;
     QPushButton *captureToggle = nullptr;
     QLabel *captureStatus = nullptr;
     bool taskbarRefreshPending = false;

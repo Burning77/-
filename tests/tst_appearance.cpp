@@ -1,6 +1,7 @@
 #include "ui/MainWindow.h"
 #include "ui/SettingsDialog.h"
 #include "ui/PreparationDialog.h"
+#include "ui/WindowChrome.h"
 #include <QAbstractScrollArea>
 #include <QFontDatabase>
 #include <QMouseEvent>
@@ -133,6 +134,9 @@ class AppearanceTest : public QObject {
         const auto id = quintptr(window.winId());
         privacy->click();
         QVERIFY(flags.value(id));
+        auto chrome = static_cast<WindowChrome *>(window.findChild<QWidget *>("windowTitleBar"));
+        QVERIFY(chrome);
+        QVERIFY(!chrome->systemInteractionEnabled());
         appearance->setChecked(true);
         appearance->setChecked(false);
         appearance->setChecked(true);
@@ -149,6 +153,7 @@ class AppearanceTest : public QObject {
         privacy->click();
         QVERIFY(!flags.value(id));
         QVERIFY(!flags.value(dialogId));
+        QVERIFY(chrome->systemInteractionEnabled());
         QVERIFY(window.isVisible());
         QVERIFY(dialog.isVisible());
         QVERIFY(controller->recording());
@@ -186,6 +191,13 @@ class AppearanceTest : public QObject {
         QVERIFY(status->property("privacyError").toBool());
         QVERIFY(status->text().contains(QStringLiteral("关闭失败")));
         QVERIFY(window.isVisible());
+        auto chrome = static_cast<WindowChrome *>(window.findChild<QWidget *>("windowTitleBar"));
+        QVERIFY(chrome);
+        QVERIFY(!chrome->systemInteractionEnabled());
+        failClear = false;
+        toggle->click();
+        toggle->click();
+        QVERIFY(chrome->systemInteractionEnabled());
     }
     void failedOwnedDialogUpdatesMainStatus() {
         quintptr rootId = 0;
@@ -402,6 +414,26 @@ class AppearanceTest : public QObject {
         window.showNormal();
         close->click();
         QVERIFY(!window.isVisible());
+    }
+    void privateDragRestoresMaximizedWindow() {
+        MainWindow window(nullptr, dataPath(), taskbarSuccess(), taskbarSuccess());
+        window.show();
+        QTest::qWait(60);
+        window.findChild<QPushButton *>("capturePrivacyToggle")->click();
+        auto bar = window.findChild<QWidget *>("windowTitleBar");
+        auto maximize = window.findChild<QPushButton *>("windowMaximize");
+        QVERIFY(bar);
+        QVERIFY(maximize);
+        maximize->click();
+        QTRY_VERIFY(window.isMaximized());
+        const auto handle = window.winId();
+        const auto press = bar->mapToGlobal(QPoint(bar->width() / 2, 15));
+        sendMouse(bar, QEvent::MouseButtonPress, press, Qt::LeftButton, Qt::LeftButton);
+        sendMouse(bar, QEvent::MouseMove, press + QPoint(30, 45), Qt::NoButton, Qt::LeftButton);
+        sendMouse(bar, QEvent::MouseButtonRelease, press + QPoint(30, 45), Qt::LeftButton, Qt::NoButton);
+        QVERIFY(!window.isMaximized());
+        QCOMPARE(window.winId(), handle);
+        QVERIFY(window.isVisible());
     }
     void settingsStayOpaqueAndReadableInGlassMode() {
         MainWindow window(nullptr, dataPath());
