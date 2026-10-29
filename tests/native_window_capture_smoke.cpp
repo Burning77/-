@@ -24,6 +24,20 @@ class PaintCounter : public QObject {
         return false;
     }
 };
+class SmokeWindow : public MainWindow {
+  public:
+    using MainWindow::MainWindow;
+    void queueTaskbarRefresh() {
+        MSG message{};
+        message.hwnd = reinterpret_cast<HWND>(winId());
+        message.message = WindowCapture::taskbarButtonCreatedMessage();
+        qintptr result = 0;
+        nativeEvent("windows_generic_MSG", &message, &result);
+    }
+    void destroyNativeSurface() {
+        destroy();
+    }
+};
 static void pump() {
     QEventLoop loop;
     QTimer::singleShot(150, &loop, &QEventLoop::quit);
@@ -58,7 +72,14 @@ int main(int argc, char **argv) {
     for (const auto &key : {"OpenAI/url", "DeepSeek/url", "transcription/url"})
         QSettings().setValue(key, "https://native-capture-fixture.invalid");
     NetworkRuntime::initializeTls();
-    MainWindow window(nullptr, profile.path() + "/data");
+    int taskbarCalls = 0;
+    bool lastTaskbarOk = false;
+    SmokeWindow window(nullptr, profile.path() + "/data", {}, [&](quintptr id, bool on) {
+        ++taskbarCalls;
+        const auto result = WindowCapture::setTaskbarExcluded(id, on);
+        lastTaskbarOk = result.ok;
+        return result;
+    });
     window.setWindowFlag(Qt::WindowDoesNotAcceptFocus);
     PaintCounter paints;
     window.installEventFilter(&paints);
@@ -67,6 +88,8 @@ int main(int argc, char **argv) {
     window.show();
     pump();
     const auto handle = window.winId();
+    const auto originalShellStyle =
+        GetWindowLongPtrW(reinterpret_cast<HWND>(handle), GWL_EXSTYLE) & (WS_EX_APPWINDOW | WS_EX_TOOLWINDOW);
     if (paints.count == 0 ||
         !(GetWindowLongPtrW(reinterpret_cast<HWND>(handle), GWL_EXSTYLE) & WS_EX_LAYERED))
         return 4;
@@ -77,8 +100,15 @@ int main(int argc, char **argv) {
         return 5;
     privacy->click();
     pump();
-    if (!check(window, 0x11) || !status->text().contains(QString::fromUtf8("已设置")))
+    if (!check(window, 0x11) || !status->text().contains(QString::fromUtf8("已设置"))) {
+        QTextStream(stderr) << status->text() << Qt::endl;
         return 6;
+    }
+    const auto previousCalls = taskbarCalls;
+    PostMessageW(reinterpret_cast<HWND>(handle), WindowCapture::taskbarButtonCreatedMessage(), 0, 0);
+    pump();
+    if (taskbarCalls <= previousCalls || !check(window, 0x11))
+        return 13;
     for (bool mode : {true, false, true}) {
         appearance->setChecked(mode);
         window.update();
@@ -94,6 +124,14 @@ int main(int argc, char **argv) {
     pump();
     if (window.isMaximized() || !check(window, 0x11))
         return 9;
+    window.showMinimized();
+    pump();
+    if (!window.isMinimized())
+        return 15;
+    window.showNormal();
+    pump();
+    if (window.isMinimized() || !check(window, 0x11))
+        return 16;
     SettingsDialog dialog(&window);
     if (!cloak(dialog))
         return 10;
@@ -101,13 +139,25 @@ int main(int argc, char **argv) {
     pump();
     if (!check(dialog, 0x11))
         return 11;
+    window.queueTaskbarRefresh();
     privacy->click();
+    const auto callsAfterDisable = taskbarCalls;
     pump();
     if (!check(window, 0) || !check(dialog, 0))
         return 12;
+    if (privacy->isChecked() || taskbarCalls != callsAfterDisable)
+        return 17;
+    if ((GetWindowLongPtrW(reinterpret_cast<HWND>(handle), GWL_EXSTYLE) &
+         (WS_EX_APPWINDOW | WS_EX_TOOLWINDOW)) != originalShellStyle)
+        return 14;
+    const auto callsBeforeDestroy = taskbarCalls;
+    window.destroyNativeSurface();
+    if (taskbarCalls != callsBeforeDestroy + 1 || !lastTaskbarOk)
+        return 18;
     QTextStream(stdout) << "Painted native Qt MainWindow: " << paints.count
                         << " paints, layered HWND, affinity0x11 across normal/glass/maximize/restore; owned "
-                           "settings0x11; both clear0. DWM cloak prevented desktop display."
+                           "settings0x11; both clear0. Shell DeleteTab/AddTab succeeded; button recreation "
+                           "reapplies privacy; native styles preserved. DWM cloak prevented desktop display."
                         << Qt::endl;
     return 0;
 }

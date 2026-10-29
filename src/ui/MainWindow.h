@@ -19,14 +19,17 @@ class CapturePrivacy;
 class MainWindow : public QMainWindow {
     Q_OBJECT
   public:
-    explicit MainWindow(QWidget *parent = nullptr, QString dataRoot = {}, WindowCaptureBackend backend = {});
+    explicit MainWindow(QWidget *parent = nullptr, QString dataRoot = {}, WindowCaptureBackend backend = {},
+                        WindowCaptureBackend taskbarBackend = {});
     ~MainWindow() override;
 
   protected:
     void closeEvent(QCloseEvent *) override;
     void showEvent(QShowEvent *) override;
     bool event(QEvent *) override;
+    bool eventFilter(QObject *, QEvent *) override;
     void paintEvent(QPaintEvent *) override;
+    bool nativeEvent(const QByteArray &, void *, qintptr *) override;
 
   private:
     SessionController controller;
@@ -45,6 +48,10 @@ class MainWindow : public QMainWindow {
     CapturePrivacy *capturePrivacy = nullptr;
     QPushButton *captureToggle = nullptr;
     QLabel *captureStatus = nullptr;
+    bool taskbarRefreshPending = false;
+    WindowCaptureBackend shellBackend;
+    quintptr restoredTaskbarId = 0;
+    void clearRestoredTaskbar();
     void applyAppearance();
     void updateCaptureStatus();
     void schedulePlacement(bool forcePrimary = false);

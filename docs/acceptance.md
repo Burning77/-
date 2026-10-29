@@ -2,6 +2,20 @@
 
 日期：2026-10-21。当前实现为 C++ / Qt Widgets Windows 版本。
 
+## 0.7.5 远程隐藏时移除任务栏运行按钮（2026-10-29）
+
+用户截图指出面试助手的任务栏图标仍可见。0.7.4只为本进程窗口设置捕获排除，任务栏运行按钮由 Shell 单独管理，因此未一并处理。现在同一“远程隐藏”开关对主 HWND 调用 ITaskbarList::DeleteTab，关闭时 AddTab；对子对话框只处理捕获排除。组合结果报告任一失败，不把任务栏操作失败显示成全部成功。本机任务栏按钮也一起移除，窗口本身不隐藏，原有句柄、所有者和样式保持不变。
+
+TaskbarButtonCreated 通知触发合并后的排队重试，执行前重新检查开关状态；关闭后不会被迟到刷新重新开启。成功 AddTab 的 HWND 被跟踪，在 QWindow 原生表面销毁前及主窗析构时以 DeleteTab 配对清理，先清标记避免重复调用，捕获排除保留到 HWND 销毁。COM 初始化计数及接口释放配对处理，已有其他 COM 线程模式时不错误反初始化。
+
+定向回归先确认任务栏后端调用缺失失败，再实现；审查发现 AddTab 的退出清理约定，新增关闭回归先失败再修复。最终完整 Release CTest19/19、QtTest275项通过，0失败、0跳过。单席只读审查的重要及轻微问题均已关闭。原生 Windows QPA 隔离夹具完成30次绘制，验证真实 Shell 隐藏/恢复调用成功、按钮重建后重试、关闭前排队刷新取消、最小化/恢复、窗口样式保持及真实表面销毁时一次成功清理；窗口捕获标志仍按0x11/0读回。所有实际 Windows 测试窗口在显示前 DWM-cloak，不干扰桌面。
+
+独立包 dist/InterviewAssistant-0.7.5 保留旧版。移除开发 PATH 后，仅用包内依赖和外部测试辅助组件，外观20项、捕获15项、原窗口31项共66项通过，原生夹具退出0。最终程序与测试构建 SHA256 一致：65CF63D48CC5187CC8CFEB5B674EC616633FE364E9CD15647625AB61B70A2715。ZIP75项逐项读取通过，229460490字节，无用户数据库、录音、凭据、日志及测试程序；dist/InterviewAssistant-0.7.5-win64.zip SHA256：D5045A3689E6A1D13E881132B65CF1AFB722007D39B3060E299E4E3A13840B0D。修改源码与英文构建副本一致。
+
+Shell HRESULT成功证明系统接受请求，没有读取真实任务栏像素、操作向日葵或录制桌面；实际图标显示、Alt+Tab键盘恢复及对端效果仍需用户环境确认。保留标准窗口样式及 Alt+Tab 恢复方式，未隐藏切换列表。固定的启动快捷方式由用户管理，若曾固定面试助手须先“从任务栏取消固定”；软件不删除或修改固定项。未操作正在运行的面试窗口、真实账号、简历或麦克风。
+
+接口依据：[移除任务栏按钮](https://learn.microsoft.com/en-us/windows/win32/api/shobjidl_core/nf-shobjidl_core-itaskbarlist-deletetab)、[添加及销毁清理约定](https://learn.microsoft.com/en-us/windows/win32/api/shobjidl_core/nf-shobjidl_core-itaskbarlist-addtab)、[Shell任务栏按钮机制](https://learn.microsoft.com/en-us/windows/win32/shell/taskbar)。
+
 ## 0.7.4 半透明外观与捕获排除（2026-10-29）
 
 按用户批准的设计增加独立的“透明背景”和“远程隐藏”。背景不透明度默认80%，可调40%～95%，文字保持不透明；切换外观不重建原生句柄，普通模式恢复浅色。两种模式共用可拖动、缩放、最小化、最大化/还原及关闭的操作栏。外观保存到 appearance/transparent、appearance/backgroundOpacity；捕获排除每次启动默认关闭，不保存开启状态。窗口内 Ctrl+Shift+O 切外观，Ctrl+Shift+P 切捕获请求。

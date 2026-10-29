@@ -35,6 +35,8 @@
 #include <QShortcut>
 #include <QSignalBlocker>
 #include <QStyle>
+#include <QPointer>
+#include <QPlatformSurfaceEvent>
 #include <QAbstractScrollArea>
 #include <algorithm>
 namespace {
@@ -91,6 +93,17 @@ MainWindow::~MainWindow() {
         delete capturePrivacy;
         capturePrivacy = nullptr;
     }
+    clearRestoredTaskbar();
+}
+void MainWindow::clearRestoredTaskbar() {
+    const auto id = restoredTaskbarId;
+    restoredTaskbarId = 0;
+    const auto invoke = shellBackend;
+    if (id && invoke) {
+        const auto cleanup = invoke(id, true);
+        if (!cleanup.ok)
+            qWarning("Taskbar cleanup failed: %s", qPrintable(cleanup.error));
+    }
 }
 void MainWindow::updateCaptureStatus() {
     if (!capturePrivacy || !captureToggle || !captureStatus)
@@ -120,6 +133,19 @@ void MainWindow::paintEvent(QPaintEvent *event) {
     const qreal radius = isMaximized() || isFullScreen() ? 0 : 10;
     painter.drawRoundedRect(bounds, radius, radius);
 }
+bool MainWindow::nativeEvent(const QByteArray &type, void *message, qintptr *result) {
+    if (type == "windows_generic_MSG" && capturePrivacy && capturePrivacy->requested() &&
+        !taskbarRefreshPending &&
+        WindowCapture::isTaskbarButtonCreatedMessage(message, quintptr(internalWinId()))) {
+        taskbarRefreshPending = true;
+        QTimer::singleShot(0, this, [this] {
+            taskbarRefreshPending = false;
+            if (capturePrivacy && capturePrivacy->requested())
+                capturePrivacy->setRequested(true);
+        });
+    }
+    return QMainWindow::nativeEvent(type, message, result);
+}
 void MainWindow::schedulePlacement(bool forcePrimary) {
     if (correctingPlacement)
         return;
@@ -134,9 +160,23 @@ bool MainWindow::event(QEvent *event) {
         schedulePlacement();
     return handled;
 }
+bool MainWindow::eventFilter(QObject *object, QEvent *event) {
+    if (object == windowHandle() && event->type() == QEvent::PlatformSurface &&
+        static_cast<QPlatformSurfaceEvent *>(event)->surfaceEventType() ==
+            QPlatformSurfaceEvent::SurfaceAboutToBeDestroyed) {
+        const QPointer<MainWindow> self(this);
+        const QPointer<QObject> receiver(object);
+        clearRestoredTaskbar();
+        if (!self || !receiver)
+            return true;
+    }
+    return QMainWindow::eventFilter(object, event);
+}
 void MainWindow::showEvent(QShowEvent *event) {
     applyAppearance();
     QMainWindow::showEvent(event);
+    if (windowHandle())
+        windowHandle()->installEventFilter(this);
     const bool first = !initiallyPositioned;
     initiallyPositioned = true;
     if (first && windowHandle()) {
@@ -187,7 +227,8 @@ static QString stateName(QString s) {
         {"Cancelled", QStringLiteral("已停止")}, {"discardFailed", QStringLiteral("丢弃失败")}};
     return labels.value(s, s);
 }
-MainWindow::MainWindow(QWidget *parent, QString dataRoot, WindowCaptureBackend backend)
+MainWindow::MainWindow(QWidget *parent, QString dataRoot, WindowCaptureBackend backend,
+                       WindowCaptureBackend taskbarBackend)
     : QMainWindow(parent), controller(dataRoot, this), player(this), output(this) {
     QGuiApplication::styleHints()->setColorScheme(Qt::ColorScheme::Light);
     QApplication::setPalette(WindowAppearance::palette(false));
@@ -274,6 +315,8 @@ MainWindow::MainWindow(QWidget *parent, QString dataRoot, WindowCaptureBackend b
     captureToggle->setCheckable(true);
     captureToggle->setToolTip(QStringLiteral("本机保持可见，向 Windows 请求捕获排除。"
                                              "向日葵和系统原生弹窗效果需实测；Ctrl+Shift+P 切换。"
+                                             "开启时本机和远控端的任务栏按钮一起隐藏，关闭后恢复。"
+                                             "最小化后可用 Alt+Tab 找回；已固定的快捷方式需自行取消固定。"
                                              "每次启动默认关闭。"));
     appearance->addWidget(captureToggle);
     captureStatus = new QLabel;
@@ -282,7 +325,23 @@ MainWindow::MainWindow(QWidget *parent, QString dataRoot, WindowCaptureBackend b
     captureStatus->setMinimumWidth(0);
     captureStatus->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     appearance->addWidget(captureStatus, 1);
-    capturePrivacy = new CapturePrivacy(this, std::move(backend));
+    const auto captureBackend = backend ? std::move(backend) : WindowCapture::setExcluded;
+    shellBackend = taskbarBackend ? std::move(taskbarBackend) : WindowCapture::setTaskbarExcluded;
+    capturePrivacy = new CapturePrivacy(this, [root = QPointer<MainWindow>(this), captureBackend,
+                                               taskbarOperation = shellBackend](quintptr id, bool on) {
+        const auto capture = captureBackend(id, on);
+        if (!root || id != quintptr(root->internalWinId()))
+            return capture;
+        const auto shell = taskbarOperation(id, on);
+        if (root && shell.ok && id == quintptr(root->internalWinId()))
+            root->restoredTaskbarId = on ? 0 : id;
+        QStringList errors;
+        if (!capture.ok)
+            errors.append(capture.error.isEmpty() ? QStringLiteral("窗口捕获排除设置失败") : capture.error);
+        if (!shell.ok)
+            errors.append(shell.error.isEmpty() ? QStringLiteral("任务栏图标设置失败") : shell.error);
+        return WindowCaptureResult{errors.isEmpty(), errors.join(QStringLiteral("；"))};
+    });
     connect(captureToggle, &QPushButton::toggled, capturePrivacy, &CapturePrivacy::setRequested);
     connect(capturePrivacy, &CapturePrivacy::stateChanged, this, &MainWindow::updateCaptureStatus);
     updateCaptureStatus();

@@ -204,6 +204,7 @@ class WindowPrivacyTest : public QObject {
         const auto invalid = WindowCapture::setExcluded(0, true);
         QVERIFY(!invalid.ok);
         QVERIFY(!invalid.error.isEmpty());
+        QVERIFY(!WindowCapture::setTaskbarExcluded(0, true).ok);
 #ifdef Q_OS_WIN
         auto root = CreateWindowExW(0, L"STATIC", L"capture-root", WS_POPUP, 0, 0, 16, 16, nullptr, nullptr,
                                     GetModuleHandleW(nullptr), nullptr);
@@ -215,6 +216,7 @@ class WindowPrivacyTest : public QObject {
         const auto result = WindowCapture::setExcluded(quintptr(child), true);
         QVERIFY(!result.ok);
         QVERIFY(!result.error.isEmpty());
+        QVERIFY(!WindowCapture::setTaskbarExcluded(quintptr(child), true).ok);
 #endif
     }
 };

@@ -39,6 +39,9 @@ class AppearanceTest : public QObject {
     static int surfaceAlpha(MainWindow &window) {
         return window.grab().toImage().pixelColor(3, window.height() / 2).alpha();
     }
+    static WindowCaptureBackend taskbarSuccess() {
+        return [](quintptr, bool) { return WindowCaptureResult{true, {}}; };
+    }
     static void screenshot(QWidget &window, const QString &name) {
         const auto directory = qEnvironmentVariable("INTERVIEW_APPEARANCE_SCREENSHOT");
         if (!directory.isEmpty())
@@ -67,7 +70,7 @@ class AppearanceTest : public QObject {
             return WindowCaptureResult{true, {}};
         };
         {
-            MainWindow window(nullptr, dataPath(), backend);
+            MainWindow window(nullptr, dataPath(), backend, taskbarSuccess());
             window.show();
             QTest::qWait(30);
             auto toggle = window.findChild<QPushButton *>("capturePrivacyToggle");
@@ -85,7 +88,7 @@ class AppearanceTest : public QObject {
             QVERIFY(window.isVisible());
         }
         calls = 0;
-        MainWindow reopened(nullptr, dataPath(), backend);
+        MainWindow reopened(nullptr, dataPath(), backend, taskbarSuccess());
         auto toggle = reopened.findChild<QPushButton *>("capturePrivacyToggle");
         QVERIFY(toggle);
         QVERIFY(!toggle->isChecked());
@@ -93,10 +96,13 @@ class AppearanceTest : public QObject {
     }
     void privacyAndAppearancePreserveRecordingAndCoverSettings() {
         QHash<quintptr, bool> flags;
-        MainWindow window(nullptr, dataPath(), [&](quintptr id, bool on) {
-            flags[id] = on;
-            return WindowCaptureResult{true, {}};
-        });
+        MainWindow window(
+            nullptr, dataPath(),
+            [&](quintptr id, bool on) {
+                flags[id] = on;
+                return WindowCaptureResult{true, {}};
+            },
+            taskbarSuccess());
         auto privacy = window.findChild<QPushButton *>("capturePrivacyToggle");
         auto appearance = window.findChild<QCheckBox *>("transparentBackground");
         auto status = window.findChild<QLabel *>("capturePrivacyStatus");
@@ -151,10 +157,13 @@ class AppearanceTest : public QObject {
     void privacyErrorsAndFailedClearAreVisible() {
         bool failEnable = true;
         bool failClear = false;
-        MainWindow window(nullptr, dataPath(), [&](quintptr, bool on) {
-            return (on ? failEnable : failClear) ? WindowCaptureResult{false, "fixture capture failure"}
-                                                 : WindowCaptureResult{true, {}};
-        });
+        MainWindow window(
+            nullptr, dataPath(),
+            [&](quintptr, bool on) {
+                return (on ? failEnable : failClear) ? WindowCaptureResult{false, "fixture capture failure"}
+                                                     : WindowCaptureResult{true, {}};
+            },
+            taskbarSuccess());
         window.show();
         auto toggle = window.findChild<QPushButton *>("capturePrivacyToggle");
         auto status = window.findChild<QLabel *>("capturePrivacyStatus");
@@ -180,10 +189,13 @@ class AppearanceTest : public QObject {
     }
     void failedOwnedDialogUpdatesMainStatus() {
         quintptr rootId = 0;
-        MainWindow window(nullptr, dataPath(), [&](quintptr id, bool on) {
-            return on && id != rootId ? WindowCaptureResult{false, "fixture dialog failure"}
-                                      : WindowCaptureResult{true, {}};
-        });
+        MainWindow window(
+            nullptr, dataPath(),
+            [&](quintptr id, bool on) {
+                return on && id != rootId ? WindowCaptureResult{false, "fixture dialog failure"}
+                                          : WindowCaptureResult{true, {}};
+            },
+            taskbarSuccess());
         window.show();
         rootId = quintptr(window.winId());
         auto toggle = window.findChild<QPushButton *>("capturePrivacyToggle");
@@ -198,6 +210,73 @@ class AppearanceTest : public QObject {
         QVERIFY(status->text().contains("fixture dialog failure"));
         delete dialog;
         QVERIFY(status->text().contains(QStringLiteral("已设置")));
+    }
+    void taskbarHidingIsMainOnlyAndFailuresRemainVisible() {
+        QHash<quintptr, bool> capture;
+        QList<QPair<quintptr, bool>> shellCalls;
+        bool fail = true;
+        bool failClear = false;
+        MainWindow window(
+            nullptr, dataPath(),
+            [&](quintptr id, bool on) {
+                capture[id] = on;
+                return WindowCaptureResult{true, {}};
+            },
+            [&](quintptr id, bool on) {
+                shellCalls.append({id, on});
+                return (on ? fail : failClear) ? WindowCaptureResult{false, "fixture taskbar failure"}
+                                               : WindowCaptureResult{true, {}};
+            });
+        window.show();
+        const auto id = quintptr(window.winId());
+        auto toggle = window.findChild<QPushButton *>("capturePrivacyToggle");
+        auto status = window.findChild<QLabel *>("capturePrivacyStatus");
+        QVERIFY(toggle);
+        QVERIFY(status);
+        QCOMPARE(shellCalls.size(), 0);
+        toggle->click();
+        QVERIFY(capture.value(id));
+        QCOMPARE(shellCalls.size(), 1);
+        QCOMPARE(shellCalls.last(), qMakePair(id, true));
+        QVERIFY(status->property("privacyError").toBool());
+        QVERIFY(status->text().contains("fixture taskbar failure"));
+        QVERIFY(!status->text().contains(QStringLiteral("已设置")));
+        QDialog dialog(&window);
+        dialog.show();
+        QVERIFY(capture.value(quintptr(dialog.winId())));
+        QCOMPARE(shellCalls.size(), 1);
+        toggle->click();
+        QCOMPARE(shellCalls.last(), qMakePair(id, false));
+        QVERIFY(!status->property("privacyError").toBool());
+        fail = false;
+        toggle->click();
+        QVERIFY(status->text().contains(QStringLiteral("已设置")));
+        QVERIFY(window.isVisible());
+        QCOMPARE(quintptr(window.winId()), id);
+        failClear = true;
+        toggle->click();
+        QVERIFY(status->text().contains(QStringLiteral("关闭失败")));
+        QVERIFY(status->text().contains("fixture taskbar failure"));
+        QVERIFY(!capture.value(id));
+        QVERIFY(window.isVisible());
+    }
+    void restoredTaskbarEntryIsUnregisteredOnClose() {
+        QList<bool> shellCalls;
+        {
+            MainWindow window(
+                nullptr, dataPath(), [](quintptr, bool) { return WindowCaptureResult{true, {}}; },
+                [&](quintptr, bool excluded) {
+                    shellCalls.append(excluded);
+                    return WindowCaptureResult{true, {}};
+                });
+            window.show();
+            auto toggle = window.findChild<QPushButton *>("capturePrivacyToggle");
+            QVERIFY(toggle);
+            toggle->click();
+            toggle->click();
+            QCOMPARE(shellCalls, QList<bool>({true, false}));
+        }
+        QCOMPARE(shellCalls, QList<bool>({true, false, true}));
     }
     void backgroundAlphaChangesWithoutFadingTextOrRecreatingWindow() {
         MainWindow window(nullptr, dataPath());
